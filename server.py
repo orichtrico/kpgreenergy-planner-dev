@@ -75,9 +75,89 @@ async def serve_liff():
 async def serve_liff_html():
     return await serve_liff()
 
+# Global sync limiter
+last_auto_sync_time = 0
+
+async def background_sync_from_google_sheet():
+    global last_auto_sync_time
+    now = time.time()
+    if now - last_auto_sync_time < 20: # Limit auto-sync frequency to every 20s
+        return
+    
+    url = getattr(engine, "google_sheet_webapp_url", "") or os.environ.get("GOOGLE_SHEET_URL", "") or os.environ.get("WEBAPP_URL", "")
+    if not url:
+        return
+        
+    last_auto_sync_time = now
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            res_text = response.read().decode('utf-8')
+            data = json.loads(res_text)
+            
+        projects_from_sheet = data.get("projects", [])
+        if not projects_from_sheet:
+            return
+            
+        updated = False
+        for p_sheet in projects_from_sheet:
+            p_name = p_sheet.get("name", "").strip().lower()
+            for p_eng in engine.projects:
+                if p_eng["name"].strip().lower() == p_name:
+                    for m_s in p_sheet.get("milestones", []):
+                        m_name = m_s.get("name")
+                        act_pct = float(m_s.get("actual_pct", 0.0))
+                        for m in p_eng.get("milestones", []):
+                            if m["name"].strip().lower() == m_name.strip().lower():
+                                m["actual_pct"] = max(0.0, min(1.0, act_pct))
+                                if m_s.get("actual_start"):
+                                    m["actual_start"] = m_s.get("actual_start")
+                                if m_s.get("actual_finish"):
+                                    m["actual_finish"] = m_s.get("actual_finish")
+                                m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
+                                m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
+                                break
+                    
+                    total_act = sum(m["actual_contribution"] for m in p_eng["milestones"])
+                    p_eng["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
+                    p_eng["variance_pct"] = round(p_eng["actual_progress_pct"] - p_eng["planned_progress_pct"], 2)
+                    if p_eng["actual_progress_pct"] >= 99.9:
+                        p_eng["status"] = "COMPLETED"
+                        p_eng["status_th"] = "เสร็จสมบูรณ์"
+                    elif p_eng["variance_pct"] >= 0:
+                        p_eng["status"] = "ON_TRACK"
+                        p_eng["status_th"] = "ตามแผนงาน"
+                    elif p_eng["variance_pct"] >= -10:
+                        p_eng["status"] = "SLIGHT_DELAY"
+                        p_eng["status_th"] = "ล่าช้าเล็กน้อย"
+                    else:
+                        p_eng["status"] = "DELAYED"
+                        p_eng["status_th"] = "ล่าช้ากว่าแผน"
+                        
+                    p_eng["s_curve"] = engine.generate_project_scurve(p_eng)
+                    updated = True
+                    break
+        if updated:
+            engine.save_to_cache()
+            print("[Auto-Sync] Synchronized data from Google Sheet successfully.")
+    except Exception as e:
+        print(f"[Auto-Sync] Background sync note: {e}")
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(background_sync_from_google_sheet())
+
 # API Endpoints
 @app.get("/api/overview")
 async def get_overview():
+    # Trigger background auto-sync on page view
+    url = getattr(engine, "google_sheet_webapp_url", "") or os.environ.get("GOOGLE_SHEET_URL", "") or os.environ.get("WEBAPP_URL", "")
+    if url:
+        asyncio.create_task(background_sync_from_google_sheet())
+
     projects = engine.projects
     total_projects = len(projects)
     total_capacity = sum(p.get("capacity_kwp", 0.0) for p in projects)

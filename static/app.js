@@ -81,6 +81,9 @@ async function loadInitialData() {
     loadBackupList();
     loadLineFlexPreview();
     
+    // Auto-sync from Google Sheet quietly on page load
+    silentAutoSyncGoogleSheet();
+    
     // Select first project by default
     if (allProjects.length > 0 && !currentProject) {
       await selectProject(allProjects[0].id);
@@ -90,6 +93,32 @@ async function loadInitialData() {
     console.error("Error loading data:", err);
     showToast("เกิดข้อผิดพลาดในการโหลดข้อมูล", "error");
   }
+}
+
+// Auto-sync from Google Sheet quietly in background on page load
+async function silentAutoSyncGoogleSheet() {
+  try {
+    const savedUrl = localStorage.getItem('kpgreenergy_webapp_url') || localStorage.getItem('kpgreenergy_gsheet_url');
+    const res = await fetch('/api/get-webapp-url');
+    const data = await res.json();
+    const activeUrl = savedUrl || data.webapp_url;
+
+    if (activeUrl) {
+      fetch('/api/sync-google-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheet_url: activeUrl })
+      }).then(r => r.json()).then(d => {
+        if (d.success) {
+          console.log("[Auto-Sync] Synced with Google Sheets successfully.");
+          fetch('/api/overview').then(r => r.json()).then(ov => {
+            globalOverview = ov;
+            renderKPIs();
+          });
+        }
+      }).catch(e => {});
+    }
+  } catch (e) {}
 }
 
 // Real-time Instant Search in Tab 2
