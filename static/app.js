@@ -81,9 +81,6 @@ async function loadInitialData() {
     loadBackupList();
     loadLineFlexPreview();
     
-    // Auto-sync from Google Sheet quietly on page load
-    silentAutoSyncGoogleSheet();
-    
     // Select first project by default
     if (allProjects.length > 0 && !currentProject) {
       await selectProject(allProjects[0].id);
@@ -494,6 +491,11 @@ function renderProjectDetail() {
   document.getElementById('prj-act-start').innerText = p.actual_start || '-';
   document.getElementById('prj-act-finish').innerText = p.actual_finish || '-';
   
+  // Compute or retrieve S-Curve instantly in 0.1ms
+  if (!p.s_curve || !p.s_curve.labels || p.s_curve.labels.length === 0) {
+    p.s_curve = computeProjectScurve(p);
+  }
+  
   // Render S-Curve instantly
   renderProjectScurve(p.s_curve);
   
@@ -501,8 +503,110 @@ function renderProjectDetail() {
   renderMilestonesTable(p.milestones || []);
 }
 
+function computeProjectScurve(p) {
+  const milestones = p.milestones || [];
+  const dates = [];
+  milestones.forEach(m => {
+    ['planned_start', 'planned_finish', 'actual_start', 'actual_finish'].forEach(k => {
+      if (m[k]) {
+        const d = new Date(m[k]);
+        if (!isNaN(d.getTime())) dates.push(d);
+      }
+    });
+  });
+
+  if (dates.length === 0) {
+    return { labels: [], planned_cum: [], actual_cum: [], planned_weekly: [], actual_weekly: [] };
+  }
+
+  let minDate = new Date(Math.min(...dates));
+  let maxDate = new Date(Math.max(...dates));
+
+  const day = minDate.getDay();
+  const diffToMon = minDate.getDate() - day + (day === 0 ? -6 : 1);
+  const startMon = new Date(minDate);
+  startMon.setDate(diffToMon);
+  startMon.setHours(0, 0, 0, 0);
+
+  const endMon = new Date(maxDate);
+  endMon.setDate(endMon.getDate() + ((7 - endMon.getDay()) % 7));
+  endMon.setHours(23, 59, 59, 999);
+
+  const weeks = [];
+  const labels = [];
+  let curr = new Date(startMon);
+  let wIdx = 1;
+  while (curr <= endMon) {
+    weeks.push(new Date(curr));
+    const dStr = ("0" + curr.getDate()).slice(-2) + "/" + ("0" + (curr.getMonth() + 1)).slice(-2);
+    labels.push(`W${wIdx} (${dStr})`);
+    curr.setDate(curr.getDate() + 7);
+    wIdx++;
+  }
+
+  const numWeeks = weeks.length;
+  const weeklyPlan = new Array(numWeeks).fill(0.0);
+  const weeklyAct = new Array(numWeeks).fill(0.0);
+
+  milestones.forEach(m => {
+    const w = m.weight || 0;
+    if (w <= 0) return;
+    const ps = m.planned_start ? new Date(m.planned_start) : null;
+    const pf = m.planned_finish ? new Date(m.planned_finish) : null;
+    if (ps && pf && !isNaN(ps) && !isNaN(pf)) {
+      const covered = [];
+      weeks.forEach((wMon, i) => {
+        const wSun = new Date(wMon);
+        wSun.setDate(wSun.getDate() + 6);
+        if (!(pf < wMon || ps > wSun)) covered.push(i);
+      });
+      if (covered.length > 0) {
+        const inc = w / covered.length;
+        covered.forEach(i => weeklyPlan[i] += inc);
+      }
+    }
+
+    const actPct = m.actual_pct || 0;
+    if (actPct > 0) {
+      const as = m.actual_start ? new Date(m.actual_start) : ps;
+      const af = m.actual_finish ? new Date(m.actual_finish) : (actPct >= 1.0 ? new Date() : null);
+      const coveredAct = [];
+      weeks.forEach((wMon, i) => {
+        const wSun = new Date(wMon);
+        wSun.setDate(wSun.getDate() + 6);
+        if (as && af && !(af < wMon || as > wSun)) coveredAct.push(i);
+        else if (as && !af && wMon >= as && wMon <= new Date()) coveredAct.push(i);
+      });
+      const actWeight = actPct * w;
+      if (coveredAct.length > 0) {
+        const inc = actWeight / coveredAct.length;
+        coveredAct.forEach(i => weeklyAct[i] += inc);
+      }
+    }
+  });
+
+  const planCum = [];
+  const actCum = [];
+  let cumP = 0;
+  let cumA = 0;
+  for (let i = 0; i < numWeeks; i++) {
+    cumP += weeklyPlan[i] * 100;
+    cumA += weeklyAct[i] * 100;
+    planCum.push(Math.round(Math.min(100, cumP) * 10) / 10);
+    actCum.push(Math.round(Math.min(100, cumA) * 10) / 10);
+  }
+
+  return {
+    labels: labels,
+    planned_cum: planCum,
+    actual_cum: actCum,
+    planned_weekly: weeklyPlan.map(v => Math.round(v * 1000) / 10),
+    actual_weekly: weeklyAct.map(v => Math.round(v * 1000) / 10)
+  };
+}
+
 function renderProjectScurve(scurveData) {
-  if (!scurveData || !scurveData.weeks || scurveData.weeks.length === 0) return;
+  if (!scurveData || !scurveData.labels || scurveData.labels.length === 0) return;
   
   const seriesData = [
     {
