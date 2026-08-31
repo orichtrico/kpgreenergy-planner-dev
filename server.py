@@ -238,7 +238,9 @@ async def get_projects(
             "planned_progress_pct": p["planned_progress_pct"],
             "variance_pct": p["variance_pct"],
             "status": p["status"],
-            "status_th": p["status_th"]
+            "status_th": p["status_th"],
+            "s_curve": p.get("s_curve", {}),
+            "milestones": p.get("milestones", [])
         })
     
     return {"count": len(results), "projects": results}

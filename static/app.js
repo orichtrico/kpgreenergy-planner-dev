@@ -443,23 +443,25 @@ function onProjectSelect() {
   }
 }
 
-const projectDetailCache = {};
-
-async function selectProject(projectId) {
-  try {
-    if (projectDetailCache[projectId]) {
-      currentProject = projectDetailCache[projectId];
-      renderProjectDetail();
-      return;
-    }
-    const res = await fetch(`/api/projects/${projectId}`);
-    if (!res.ok) throw new Error("Project not found");
-    currentProject = await res.json();
-    projectDetailCache[projectId] = currentProject;
+function selectProject(projectId) {
+  if (!projectId) return;
+  
+  // 1. Instant Zero-Latency memory lookup from preloaded allProjects
+  const found = allProjects.find(p => p.id === projectId);
+  if (found) {
+    currentProject = found;
     renderProjectDetail();
-  } catch (err) {
-    console.error("Error fetching project:", err);
+    return;
   }
+  
+  // 2. Fallback network fetch if needed
+  fetch(`/api/projects/${projectId}`)
+    .then(r => r.json())
+    .then(p => {
+      currentProject = p;
+      renderProjectDetail();
+    })
+    .catch(err => console.error("Error fetching project:", err));
 }
 
 function renderProjectDetail() {
@@ -492,43 +494,55 @@ function renderProjectDetail() {
   document.getElementById('prj-act-start').innerText = p.actual_start || '-';
   document.getElementById('prj-act-finish').innerText = p.actual_finish || '-';
   
-  // Render S-Curve
+  // Render S-Curve instantly
   renderProjectScurve(p.s_curve);
   
-  // Render Milestone Table
+  // Render Milestone Table in 1 tick
   renderMilestonesTable(p.milestones || []);
 }
 
 function renderProjectScurve(scurveData) {
   if (!scurveData || !scurveData.weeks || scurveData.weeks.length === 0) return;
   
+  const seriesData = [
+    {
+      name: 'Planned Cumulative S-Curve (%)',
+      type: 'line',
+      data: scurveData.planned_cum || []
+    },
+    {
+      name: 'Actual Cumulative S-Curve (%)',
+      type: 'line',
+      data: scurveData.actual_cum || []
+    },
+    {
+      name: 'Planned Weekly (%)',
+      type: 'column',
+      data: scurveData.planned_weekly || []
+    },
+    {
+      name: 'Actual Weekly (%)',
+      type: 'column',
+      data: scurveData.actual_weekly || []
+    }
+  ];
+
+  // If chart already exists, update options/series smoothly in 1ms without recreating canvas
+  if (projectScurveChart) {
+    projectScurveChart.updateOptions({
+      xaxis: { categories: scurveData.labels },
+      series: seriesData
+    }, false, false);
+    return;
+  }
+  
   const options = {
-    series: [
-      {
-        name: 'Planned Cumulative S-Curve (%)',
-        type: 'line',
-        data: scurveData.planned_cum
-      },
-      {
-        name: 'Actual Cumulative S-Curve (%)',
-        type: 'line',
-        data: scurveData.actual_cum
-      },
-      {
-        name: 'Planned Weekly (%)',
-        type: 'column',
-        data: scurveData.planned_weekly
-      },
-      {
-        name: 'Actual Weekly (%)',
-        type: 'column',
-        data: scurveData.actual_weekly
-      }
-    ],
+    series: seriesData,
     chart: {
       height: '100%',
       type: 'line',
       stacked: false,
+      animations: { enabled: false }, // Instant rendering
       toolbar: {
         show: true,
         tools: { download: true, zoom: true, reset: true }
@@ -600,7 +614,6 @@ function renderProjectScurve(scurveData) {
   
   const chartEl = document.getElementById('project-scurve-chart');
   if (chartEl) {
-    if (projectScurveChart) projectScurveChart.destroy();
     projectScurveChart = new ApexCharts(chartEl, options);
     projectScurveChart.render();
   }
@@ -608,13 +621,13 @@ function renderProjectScurve(scurveData) {
 
 function renderMilestonesTable(milestones) {
   const tbody = document.getElementById('milestones-table-body');
-  tbody.innerHTML = '';
-  document.getElementById('milestones-count-label').innerText = `${milestones.length} งานทั้งหมด`;
+  if (!tbody) return;
   
+  const labelEl = document.getElementById('milestones-count-label');
+  if (labelEl) labelEl.innerText = `${milestones.length} งานทั้งหมด`;
+  
+  let html = '';
   milestones.forEach((m, idx) => {
-    const tr = document.createElement('tr');
-    tr.className = 'hover:bg-slate-50 transition';
-    
     const pctVal = Math.round(m.actual_pct * 100);
     const weightPct = (m.weight * 100).toFixed(1) + '%';
     const contribPct = (m.actual_contribution * 100).toFixed(2) + '%';
@@ -628,40 +641,43 @@ function renderMilestonesTable(milestones) {
       statusBadge = '<span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold">รอดำเนินการ</span>';
     }
     
+    const cat = m.category || (idx < 9 ? 'งานราชการ' : (idx < 12 ? 'ออกแบบ' : 'ก่อสร้าง'));
     let catBadge = '';
-    if (m.category.includes('Permission')) {
+    if (cat.includes('ราชการ') || cat.includes('Permission')) {
       catBadge = '<span class="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">งานราชการ</span>';
-    } else if (m.category.includes('Engineering')) {
+    } else if (cat.includes('ออกแบบ') || cat.includes('Engineering')) {
       catBadge = '<span class="text-[10px] text-cyan-600 bg-cyan-50 px-2 py-0.5 rounded">ออกแบบ</span>';
     } else {
       catBadge = '<span class="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded">ก่อสร้าง</span>';
     }
     
-    tr.innerHTML = `
-      <td class="py-3 px-4 font-medium text-slate-900">${m.name}</td>
-      <td class="py-3 px-3">${catBadge}</td>
-      <td class="py-3 px-3 text-center font-mono font-semibold text-slate-700">${weightPct}</td>
-      <td class="py-3 px-3 text-slate-500 font-mono">${m.planned_start || '-'} <br><span class="text-slate-400">ถึง</span> ${m.planned_finish || '-'}</td>
-      <td class="py-3 px-3 text-slate-700 font-mono">${m.actual_start || '-'} <br><span class="text-slate-400">ถึง</span> ${(pctVal >= 100 && m.actual_finish) ? m.actual_finish : '-'}</td>
-      <td class="py-3 px-4">
-        <div class="flex items-center space-x-2">
-          <div class="w-20 bg-slate-100 rounded-full h-2 overflow-hidden">
-            <div class="bg-amber-500 h-2 rounded-full" style="width: ${pctVal}%"></div>
+    html += `
+      <tr class="hover:bg-slate-50 transition">
+        <td class="py-3 px-4 font-medium text-slate-900">${m.name}</td>
+        <td class="py-3 px-3">${catBadge}</td>
+        <td class="py-3 px-3 text-center font-mono font-semibold text-slate-700">${weightPct}</td>
+        <td class="py-3 px-3 text-slate-500 font-mono">${m.planned_start || '-'} <br><span class="text-slate-400">ถึง</span> ${m.planned_finish || '-'}</td>
+        <td class="py-3 px-3 text-slate-700 font-mono">${m.actual_start || '-'} <br><span class="text-slate-400">ถึง</span> ${(pctVal >= 100 && m.actual_finish) ? m.actual_finish : '-'}</td>
+        <td class="py-3 px-4">
+          <div class="flex items-center space-x-2">
+            <div class="w-20 bg-slate-100 rounded-full h-2 overflow-hidden">
+              <div class="bg-amber-500 h-2 rounded-full" style="width: ${pctVal}%"></div>
+            </div>
+            <span class="font-bold text-slate-800 w-8 text-right">${pctVal}%</span>
           </div>
-          <span class="font-bold text-slate-800 w-8 text-right">${pctVal}%</span>
-        </div>
-      </td>
-      <td class="py-3 px-3 text-center font-mono font-semibold text-emerald-600">${contribPct}</td>
-      <td class="py-3 px-3 text-center">${statusBadge}</td>
-      <td class="py-3 px-3 text-center">
-        <button onclick="openQuickUpdateModal('${m.name}', ${pctVal}, '${m.actual_start || ''}', '${m.actual_finish || ''}')" class="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-amber-50" title="แก้ไข">
-          <i data-lucide="edit-2" class="w-4 h-4"></i>
-        </button>
-      </td>
+        </td>
+        <td class="py-3 px-3 text-center font-mono font-semibold text-emerald-600">${contribPct}</td>
+        <td class="py-3 px-3 text-center">${statusBadge}</td>
+        <td class="py-3 px-3 text-center">
+          <button onclick="openQuickUpdateModal('${m.name}', ${pctVal}, '${m.actual_start || ''}', '${m.actual_finish || ''}')" class="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-amber-50" title="แก้ไข">
+            <i data-lucide="edit-2" class="w-4 h-4"></i>
+          </button>
+        </td>
+      </tr>
     `;
-    tbody.appendChild(tr);
   });
-  
+
+  tbody.innerHTML = html;
   lucide.createIcons();
 }
 
