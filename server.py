@@ -97,7 +97,7 @@ def _fetch_and_apply_google_sheet():
         return
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             res_text = response.read().decode('utf-8')
             data = json.loads(res_text)
             
@@ -106,46 +106,63 @@ def _fetch_and_apply_google_sheet():
             return
             
         updated = False
-        for p_sheet in projects_from_sheet:
-            p_name = p_sheet.get("name", "").strip().lower()
-            for p_eng in engine.projects:
-                if p_eng["name"].strip().lower() == p_name:
-                    for m_s in p_sheet.get("milestones", []):
-                        m_name = m_s.get("name")
-                        act_pct = float(m_s.get("actual_pct", 0.0))
-                        for m in p_eng.get("milestones", []):
-                            if m["name"].strip().lower() == m_name.strip().lower():
-                                m["actual_pct"] = max(0.0, min(1.0, act_pct))
-                                if m_s.get("actual_start"):
-                                    m["actual_start"] = m_s.get("actual_start")
-                                if m_s.get("actual_finish"):
-                                    m["actual_finish"] = m_s.get("actual_finish")
-                                m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
-                                m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
+        for idx, p_sheet in enumerate(projects_from_sheet):
+            sheet_order = str(p_sheet.get("order_no", "")).strip()
+            
+            # Match project by index (1-to-1) or order_no
+            target_p = None
+            if idx < len(engine.projects):
+                target_p = engine.projects[idx]
+            else:
+                for p in engine.projects:
+                    if str(p.get("order_no", "")).strip() == sheet_order:
+                        target_p = p
+                        break
+            
+            if target_p:
+                for m_idx, m_s in enumerate(p_sheet.get("milestones", [])):
+                    act_pct = float(m_s.get("actual_pct", 0.0))
+                    target_m = None
+                    if m_idx < len(target_p.get("milestones", [])):
+                        target_m = target_p["milestones"][m_idx]
+                    else:
+                        m_name = str(m_s.get("name", "")).strip().lower()
+                        for m in target_p.get("milestones", []):
+                            if m["name"].strip().lower() == m_name:
+                                target_m = m
                                 break
                     
-                    total_act = sum(m["actual_contribution"] for m in p_eng["milestones"])
-                    p_eng["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
-                    p_eng["variance_pct"] = round(p_eng["actual_progress_pct"] - p_eng["planned_progress_pct"], 2)
-                    if p_eng["actual_progress_pct"] >= 99.9:
-                        p_eng["status"] = "COMPLETED"
-                        p_eng["status_th"] = "เสร็จสมบูรณ์"
-                    elif p_eng["variance_pct"] >= 0:
-                        p_eng["status"] = "ON_TRACK"
-                        p_eng["status_th"] = "ตามแผนงาน"
-                    elif p_eng["variance_pct"] >= -10:
-                        p_eng["status"] = "SLIGHT_DELAY"
-                        p_eng["status_th"] = "ล่าช้าเล็กน้อย"
-                    else:
-                        p_eng["status"] = "DELAYED"
-                        p_eng["status_th"] = "ล่าช้ากว่าแผน"
-                        
-                    p_eng["s_curve"] = engine.generate_project_scurve(p_eng)
-                    updated = True
-                    break
+                    if target_m:
+                        target_m["actual_pct"] = max(0.0, min(1.0, act_pct))
+                        if m_s.get("actual_start"):
+                            target_m["actual_start"] = m_s.get("actual_start")
+                        if m_s.get("actual_finish"):
+                            target_m["actual_finish"] = m_s.get("actual_finish")
+                        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
+                        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
+                
+                total_act = sum(m["actual_contribution"] for m in target_p["milestones"])
+                target_p["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
+                target_p["variance_pct"] = round(target_p["actual_progress_pct"] - target_p["planned_progress_pct"], 2)
+                if target_p["actual_progress_pct"] >= 99.9:
+                    target_p["status"] = "COMPLETED"
+                    target_p["status_th"] = "เสร็จสมบูรณ์"
+                elif target_p["variance_pct"] >= 0:
+                    target_p["status"] = "ON_TRACK"
+                    target_p["status_th"] = "ตามแผนงาน"
+                elif target_p["variance_pct"] >= -10:
+                    target_p["status"] = "SLIGHT_DELAY"
+                    target_p["status_th"] = "ล่าช้าเล็กน้อย"
+                else:
+                    target_p["status"] = "DELAYED"
+                    target_p["status_th"] = "ล่าช้ากว่าแผน"
+                    
+                target_p["s_curve"] = engine.generate_project_scurve(target_p)
+                updated = True
+                
         if updated:
             engine.save_to_cache()
-            print("[Auto-Sync] Background synced from Google Sheet.")
+            print(f"[Auto-Sync] Successfully synchronized {len(projects_from_sheet)} projects from Google Sheet.")
     except Exception as e:
         print(f"[Auto-Sync Notice] {e}")
 
@@ -305,11 +322,19 @@ async def update_milestone(req: MilestoneUpdateRequest):
     
     if "script.google.com" in target_write_url:
         try:
+            m_idx = 0
+            for idx, m in enumerate(updated_project.get("milestones", [])):
+                if m["name"].strip().lower() == req.milestone_name.strip().lower():
+                    m_idx = idx
+                    break
+            
             payload = {
                 "action": "update_milestone",
                 "project_id": updated_project["id"],
+                "order_no": str(updated_project.get("order_no", "")),
                 "project_name": updated_project["name"],
                 "milestone_name": req.milestone_name,
+                "milestone_index": m_idx,
                 "actual_pct": pct,
                 "actual_start": req.actual_start or "",
                 "actual_finish": req.actual_finish or "",
@@ -327,12 +352,15 @@ async def update_milestone(req: MilestoneUpdateRequest):
                 except:
                     pass
             
-            # Attempt 2: If Attempt 1 didn't return success (due to 302 redirect stripping POST body), send via GET query params
+            # Attempt 2: GET query params fallback
             if not gsheet_synced:
                 params = {
                     "action": "update_milestone",
+                    "project_id": updated_project["id"],
+                    "order_no": str(updated_project.get("order_no", "")),
                     "project_name": updated_project["name"],
                     "milestone_name": req.milestone_name,
+                    "milestone_index": str(m_idx),
                     "actual_pct": str(pct),
                     "actual_start": req.actual_start or "",
                     "actual_finish": req.actual_finish or "",
