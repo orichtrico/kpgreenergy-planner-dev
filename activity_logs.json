@@ -1,0 +1,28 @@
+[
+  {
+    "id": "log_20260901021400085",
+    "timestamp": "2026-09-01 02:14:00",
+    "project_id": "prj_001",
+    "project_name": "ฟาร์มสุกรขุนเขาหินซ้อน",
+    "milestone_name": "Testing & Commissioning",
+    "actual_pct": 100.0,
+    "actual_start": "2026-08-10",
+    "actual_finish": "2026-08-20",
+    "updated_by": "Web Dashboard",
+    "note": "อัปเดตความก้าวหน้า 100.0%",
+    "source": "Web Dashboard"
+  },
+  {
+    "id": "log_20260901021342975",
+    "timestamp": "2026-09-01 02:13:42",
+    "project_id": "prj_001",
+    "project_name": "ฟาร์มสุกรขุนเขาหินซ้อน",
+    "milestone_name": "Testing & Commissioning",
+    "actual_pct": 100.0,
+    "actual_start": "2026-08-10",
+    "actual_finish": "2026-08-20",
+    "updated_by": "Antigravity Verification Test",
+    "note": "อัปเดตความก้าวหน้า 100.0%",
+    "source": "Web Dashboard"
+  }
+]

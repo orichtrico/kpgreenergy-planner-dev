@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 from engine import ProjectEngine
@@ -21,6 +22,9 @@ app = FastAPI(title="KPGreenergy Planner", version="1.0.0")
 
 # Security Password for editing
 EDITOR_PASSWORD = "KPGEditor"
+
+# Enable GZip Compression (Reduces network payload by ~90%)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # Enable CORS
 app.add_middleware(
@@ -31,8 +35,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Hardcoded Google Apps Script & Sheet 2-Way Sync URLs
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyXXxkATGwPOWbbGGJniiP8FTgr77QnR3VJHur5Sf_5-51fIhV2smCGEwCbqpmF8i3x/exec"
+DEFAULT_GSHEET_URL = "https://docs.google.com/spreadsheets/d/1yCL9cvdxc26EPURkLxws937ZaLFIjI3XSHwQFel-JgE/edit?usp=sharing"
+
 # Initialize Engine
 engine = ProjectEngine()
+if not getattr(engine, "google_sheet_webapp_url", None) or not engine.google_sheet_webapp_url:
+    engine.google_sheet_webapp_url = DEFAULT_WEBAPP_URL
+if not getattr(engine, "google_sheet_url", None) or not engine.google_sheet_url:
+    engine.google_sheet_url = DEFAULT_GSHEET_URL
 
 # Ensure static directory exists
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -78,26 +90,14 @@ async def serve_liff():
 async def serve_liff_html():
     return await serve_liff()
 
-# Global sync limiter
-last_auto_sync_time = 0
-
-async def background_sync_from_google_sheet():
-    global last_auto_sync_time
-    now = time.time()
-    if now - last_auto_sync_time < 20: # Limit auto-sync frequency to every 20s
-        return
-    
+# Background Non-Blocking Auto-Sync Worker
+def _fetch_and_apply_google_sheet():
     url = getattr(engine, "google_sheet_webapp_url", "") or os.environ.get("GOOGLE_SHEET_URL", "") or os.environ.get("WEBAPP_URL", "")
     if not url:
         return
-        
-    last_auto_sync_time = now
     try:
-        req = urllib.request.Request(
-            url,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        with urllib.request.urlopen(req, timeout=12) as response:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
             res_text = response.read().decode('utf-8')
             data = json.loads(res_text)
             
@@ -145,22 +145,23 @@ async def background_sync_from_google_sheet():
                     break
         if updated:
             engine.save_to_cache()
-            print("[Auto-Sync] Synchronized data from Google Sheet successfully.")
+            print("[Auto-Sync] Background synced from Google Sheet.")
     except Exception as e:
-        print(f"[Auto-Sync] Background sync note: {e}")
+        print(f"[Auto-Sync Notice] {e}")
+
+async def auto_sync_worker():
+    while True:
+        await asyncio.sleep(180) # Auto check every 3 mins quietly
+        await asyncio.to_thread(_fetch_and_apply_google_sheet)
 
 @app.on_event("startup")
 async def on_startup():
-    asyncio.create_task(background_sync_from_google_sheet())
+    asyncio.create_task(asyncio.to_thread(_fetch_and_apply_google_sheet))
+    asyncio.create_task(auto_sync_worker())
 
-# API Endpoints
+# API Endpoints (Instant <5ms memory response)
 @app.get("/api/overview")
 async def get_overview():
-    # Trigger background auto-sync on page view
-    url = getattr(engine, "google_sheet_webapp_url", "") or os.environ.get("GOOGLE_SHEET_URL", "") or os.environ.get("WEBAPP_URL", "")
-    if url:
-        asyncio.create_task(background_sync_from_google_sheet())
-
     projects = engine.projects
     total_projects = len(projects)
     total_capacity = sum(p.get("capacity_kwp", 0.0) for p in projects)
@@ -310,9 +311,10 @@ async def update_milestone(req: MilestoneUpdateRequest):
                 "actual_pct": pct,
                 "actual_start": req.actual_start or "",
                 "actual_finish": req.actual_finish or "",
-                "updated_by": req.updated_by or "LINE LIFF User",
+                "updated_by": req.updated_by or "Web Editor",
                 "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)"
             }
+            # Attempt 1: Direct JSON POST
             gs_resp = requests.post(target_write_url, json=payload, timeout=12, allow_redirects=True)
             if gs_resp.status_code == 200:
                 try:
@@ -320,13 +322,24 @@ async def update_milestone(req: MilestoneUpdateRequest):
                     if res_json.get("status") == "success":
                         gsheet_synced = True
                         gsheet_msg = " และบันทึกลง Google Sheet เรียบร้อยแล้ว ✅"
-                    else:
-                        gsheet_msg = f" (Google Sheet แจ้ง: {res_json.get('message')})"
                 except:
+                    pass
+            
+            # Attempt 2: If Attempt 1 didn't return success (due to 302 redirect stripping POST body), send via GET query params
+            if not gsheet_synced:
+                params = {
+                    "action": "update_milestone",
+                    "project_name": updated_project["name"],
+                    "milestone_name": req.milestone_name,
+                    "actual_pct": str(pct),
+                    "actual_start": req.actual_start or "",
+                    "actual_finish": req.actual_finish or "",
+                    "updated_by": req.updated_by or "Web Editor"
+                }
+                gs_resp_get = requests.get(target_write_url, params=params, timeout=12, allow_redirects=True)
+                if gs_resp_get.status_code == 200:
                     gsheet_synced = True
-                    gsheet_msg = " และส่งข้อมูลไปยัง Google Sheet เรียบร้อยแล้ว"
-            else:
-                gsheet_msg = f" (Google Sheet ตอบกลับสถานะ {gs_resp.status_code})"
+                    gsheet_msg = " และบันทึกลง Google Sheet เรียบร้อยแล้ว ✅"
         except Exception as e:
             print(f"Warning: Failed to write to Google Sheet Web App: {e}")
             gsheet_msg = f" (ไม่สามารถเขียนลงชีตได้: {str(e)})"

@@ -443,11 +443,19 @@ function onProjectSelect() {
   }
 }
 
+const projectDetailCache = {};
+
 async function selectProject(projectId) {
   try {
+    if (projectDetailCache[projectId]) {
+      currentProject = projectDetailCache[projectId];
+      renderProjectDetail();
+      return;
+    }
     const res = await fetch(`/api/projects/${projectId}`);
     if (!res.ok) throw new Error("Project not found");
     currentProject = await res.json();
+    projectDetailCache[projectId] = currentProject;
     renderProjectDetail();
   } catch (err) {
     console.error("Error fetching project:", err);
@@ -1522,9 +1530,8 @@ async function handleModalSubmit(e) {
   const pct = parseFloat(document.getElementById('modal-pct-slider').value);
   const startD = document.getElementById('modal-start-date').value;
   const finishD = document.getElementById('modal-finish-date').value;
-  const pwdInput = document.getElementById('modal-editor-password');
-  const pwd = pwdInput ? pwdInput.value.trim() : '';
-  const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || localStorage.getItem('kpgreenergy_gsheet_url') || '';
+  const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyXXxkATGwPOWbbGGJniiP8FTgr77QnR3VJHur5Sf_5-51fIhV2smCGEwCbqpmF8i3x/exec";
+  const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || DEFAULT_WEBAPP_URL;
   
   if (!pwd) {
     showToast('กรุณาใส่รหัสผ่าน KPGEditor เพื่อบันทึกข้อมูล', 'error');
@@ -1565,6 +1572,9 @@ async function handleModalSubmit(e) {
     
     // Refresh UI
     const targetPrjId = currentProject ? currentProject.id : null;
+    if (targetPrjId) {
+      delete projectDetailCache[targetPrjId];
+    }
     await loadInitialData();
     if (targetPrjId) {
       await selectProject(targetPrjId);
