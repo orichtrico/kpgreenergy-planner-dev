@@ -1564,8 +1564,11 @@ async function handleModalSubmit(e) {
     sessionStorage.setItem('kpg_auth_pwd', pwd);
     
     // Refresh UI
+    const targetPrjId = currentProject ? currentProject.id : null;
     await loadInitialData();
-    await selectProject(currentProject.id);
+    if (targetPrjId) {
+      await selectProject(targetPrjId);
+    }
     
   } catch (err) {
     console.error(err);
@@ -1583,6 +1586,7 @@ async function handleModalSubmit(e) {
 function populateSimulatorDropdowns() {
   const simPrj = document.getElementById('sim-project-select');
   const simM = document.getElementById('sim-milestone-select');
+  if (!simPrj || !simM) return;
   
   simPrj.innerHTML = '';
   allProjects.forEach(p => {
