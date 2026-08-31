@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="th" class="h-full bg-slate-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KPGreenergy Planner - Real-time Project & S-Curve Dashboard</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Google Fonts: Prompt & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- ApexCharts & Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
+  <!-- HLS.js for Live CCTV Streaming -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  
+  <!-- html2pdf.js for generating PDF reports -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <style>
+    body {
+      font-family: 'Prompt', 'Inter', sans-serif;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background-color: #cbd5e1;
+      border-radius: 4px;
+    }
+    @media print {
+      body * {
+        visibility: hidden;
+      }
+      #printable-report, #printable-report * {
+        visibility: visible;
+      }
+      #printable-report {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col custom-scroll text-slate-800 antialiased selection:bg-amber-500 selection:text-white">
+
+  <!-- TOP NAVIGATION HEADER (DARK GREEN THEME) -->
+  <header class="bg-[#043327] text-white sticky top-0 z-50 border-b border-[#064e3b] shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        
+        <!-- Logo & Title -->
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-400 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-950/40 text-slate-950">
+            <i data-lucide="sun-medium" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <div class="flex items-center space-x-2">
+              <span class="font-bold text-lg tracking-wide text-white">KPGreenergy Planner</span>
+              <span class="px-2 py-0.5 text-xs font-semibold bg-emerald-400/20 text-emerald-300 rounded-full border border-emerald-400/30 flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Real-time
+              </span>
+            </div>
+            <p class="text-xs text-emerald-200/80">ระบบติดตามแผนงานก่อสร้าง & S-Curve โครงการพลังงานแสงอาทิตย์</p>
+          </div>
+        </div>
+
+        <!-- Header Actions -->
+        <div class="flex items-center space-x-2.5">
+          <!-- Export Excel / CSV Button -->
+          <a href="/api/export-csv" download class="hidden md:inline-flex items-center space-x-1.5 bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition shadow-sm border border-amber-400/30" title="ดาวน์โหลดข้อมูลความก้าวหน้าโครงการทั้งหมดเป็น Excel/CSV">
+            <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5"></i>
+            <span>Export 137 โครงการ</span>
+          </a>
+
+          <!-- Activity Audit Log Button -->
+          <button onclick="openActivityLogModal()" class="hidden sm:inline-flex items-center space-x-1.5 bg-[#064e3b] hover:bg-[#08634c] text-emerald-100 px-3 py-1.5 rounded-lg text-xs font-medium transition border border-emerald-400/20" title="ดูประวัติการอัปเดตงานทั้งหมด (Audit Log)">
+            <i data-lucide="history" class="w-3.5 h-3.5 text-amber-400"></i>
+            <span>Activity Log</span>
+          </button>
+
+          <!-- LINE LIFF Button -->
+          <a href="/liff" target="_blank" class="hidden sm:inline-flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition shadow-sm border border-emerald-400/30">
+            <i data-lucide="smartphone" class="w-3.5 h-3.5"></i>
+            <span>LINE LIFF</span>
+          </a>
+
+          <!-- Refresh Button -->
+          <button onclick="refreshData()" class="p-2 text-emerald-200 hover:text-white hover:bg-[#064e3b] rounded-lg transition" title="รีเฟรชข้อมูล">
+            <i data-lucide="rotate-cw" class="w-4 h-4" id="refresh-icon"></i>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- MAIN NAVIGATION TABS (DARK GREEN BAR) -->
+      <nav class="flex space-x-6 sm:space-x-8 -mb-px text-sm font-medium border-t border-[#064e3b] overflow-x-auto custom-scroll">
+        <button onclick="switchTab('overview')" id="tab-btn-overview" class="py-3 px-1 border-b-2 border-amber-400 text-amber-300 flex items-center space-x-2 whitespace-nowrap">
+          <i data-lucide="layout-grid" class="w-4 h-4"></i>
+          <span>ภาพรวมรายเฟส (Phase Overview)</span>
+        </button>
+        <button onclick="switchTab('project')" id="tab-btn-project" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
+          <i data-lucide="trending-up" class="w-4 h-4"></i>
+          <span>เจาะลึกรายโครงการ & S-Curve</span>
+        </button>
+        <button onclick="switchTab('comparison')" id="tab-btn-comparison" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
+          <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
+          <span>กราฟเปรียบเทียบ & การวิเคราะห์</span>
+        </button>
+        <button onclick="switchTab('cctv')" id="tab-btn-cctv" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
+          <i data-lucide="video" class="w-4 h-4 text-rose-300"></i>
+          <span>CCTV Real time</span>
+        </button>
+        <button onclick="switchTab('integration')" id="tab-btn-integration" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
+          <i data-lucide="settings" class="w-4 h-4"></i>
+          <span>เชื่อมต่อ LINE & Google Sheets</span>
+        </button>
+      </nav>
+
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- KPI SUMMARY METRIC CARDS -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      
+      <!-- Card 1: Projects Total -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">โครงการทั้งหมด</p>
+          <h3 class="text-2xl sm:text-3xl font-bold text-slate-800 mt-1" id="kpi-total-projects">-</h3>
+          <p class="text-xs text-slate-500 mt-1 flex items-center gap-1">
+            <i data-lucide="layers" class="w-3.5 h-3.5 text-slate-400"></i>
+            <span id="kpi-phases-count">-</span> เฟส/ล็อต
+          </p>
+        </div>
+        <div class="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+          <i data-lucide="folder-kanban" class="w-6 h-6"></i>
+        </div>
+      </div>
+
+      <!-- Card 2: Total Capacity -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">กำลังการผลิตรวม</p>
+          <h3 class="text-2xl sm:text-3xl font-bold text-slate-800 mt-1" id="kpi-total-capacity">-</h3>
+          <p class="text-xs text-slate-500 mt-1 flex items-center gap-1">
+            <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-500"></i>
+            <span id="kpi-capacity-kwp">-</span> kWp
+          </p>
+        </div>
+        <div class="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+          <i data-lucide="zap" class="w-6 h-6"></i>
+        </div>
+      </div>
+
+      <!-- Card 3: Overall Progress -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">ผลงานจริง / แผนงาน</p>
+          <div class="flex items-baseline space-x-2 mt-1">
+            <h3 class="text-2xl sm:text-3xl font-bold text-emerald-600" id="kpi-actual-progress">0%</h3>
+            <span class="text-sm font-semibold text-slate-400" id="kpi-planned-progress">/ 0%</span>
+          </div>
+          <p class="text-xs mt-1" id="kpi-variance-badge">-</p>
+        </div>
+        <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+          <i data-lucide="activity" class="w-6 h-6"></i>
+        </div>
+      </div>
+
+      <!-- Card 4: Project Status -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
+        <div>
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">สถานะโครงการ</p>
+          <div class="flex items-center space-x-3 mt-1.5">
+            <span class="text-xs font-medium bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md border border-emerald-200" id="kpi-completed">0 เสร็จ</span>
+            <span class="text-xs font-medium bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md border border-blue-200" id="kpi-ontrack">0 ปกติ</span>
+            <span class="text-xs font-medium bg-rose-50 text-rose-700 px-2 py-0.5 rounded-md border border-rose-200" id="kpi-delayed">0 ล่าช้า</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">อัปเดตล่าสุด: <span id="kpi-update-time">วันนี้</span></p>
+        </div>
+        <div class="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
+          <i data-lucide="pie-chart" class="w-6 h-6"></i>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 1: PHASE / LOT OVERVIEW -->
+    <!-- ========================================================================= -->
+    <div id="tab-overview" class="space-y-6">
+      
+      <!-- Charts Row: Phase Comparison + Status Distribution -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Phase Progress Comparison Chart -->
+        <div class="lg:col-span-2 bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="font-bold text-slate-800 text-base">ความก้าวหน้ารายเฟส (Phase Progress: Plan vs Actual)</h3>
+              <p class="text-xs text-slate-500">เปรียบเทียบสัดส่วน % ความคืบหน้าของแต่ละล็อต/เฟส</p>
+            </div>
+            <span class="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg font-medium">Weighted by Capacity</span>
+          </div>
+          <div class="h-64 sm:h-72" id="phase-bar-chart"></div>
+        </div>
+
+        <!-- Status Distribution Chart -->
+        <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col justify-between">
+          <div>
+            <h3 class="font-bold text-slate-800 text-base">สัดส่วนสถานะโครงการ</h3>
+            <p class="text-xs text-slate-500">สถานะความพร้อมและการดำเนินงาน</p>
+            <div class="h-56 flex items-center justify-center mt-2" id="status-donut-chart"></div>
+          </div>
+          <div class="border-t border-slate-100 pt-3 flex justify-around text-center text-xs">
+            <div>
+              <p class="text-slate-400">เสร็จสิ้น</p>
+              <p class="font-bold text-emerald-600 text-sm" id="donut-stat-completed">0</p>
+            </div>
+            <div>
+              <p class="text-slate-400">ตามแผน</p>
+              <p class="font-bold text-blue-600 text-sm" id="donut-stat-ontrack">0</p>
+            </div>
+            <div>
+              <p class="text-slate-400">ล่าช้า</p>
+              <p class="font-bold text-rose-600 text-sm" id="donut-stat-delayed">0</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Phase / Lot Cards Grid -->
+      <div>
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-bold text-slate-800 text-lg">รายการเฟสและกลุ่มโครงการ (Lots & Phases)</h3>
+          <span class="text-xs text-slate-500">คลิกที่การ์ดเพื่อดูโครงการในเฟสนั้น</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" id="phase-cards-container">
+          <!-- Dynamic Phase Cards injected here -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 2: PROJECT DEEP DIVE & S-CURVE -->
+    <!-- ========================================================================= -->
+    <div id="tab-project" class="hidden space-y-6">
+      
+      <!-- Filter & Project Selector Bar -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+        <!-- Quick Search Bar -->
+        <div class="relative">
+          <input type="text" id="project-search-input" oninput="onProjectSearchInput(this.value)" placeholder="🔍 พิมพ์เพื่อค้นหาทันที (ชื่อโครงการ, Order No, กำลังการผลิต, หมวดหมู่...)" class="w-full bg-slate-50 border border-slate-300 focus:border-emerald-500 rounded-xl px-4 py-2.5 text-xs text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition">
+          <span class="absolute right-3 top-2.5 text-[10px] text-slate-400 font-mono" id="search-match-count">137 โครงการ</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+          
+          <!-- Filter 1: Lot / Phase -->
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">เลือกเฟส / Lot</label>
+            <select id="filter-lot" onchange="onLotChange()" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              <option value="">-- ทุกล็อต / เฟส --</option>
+            </select>
+          </div>
+
+          <!-- Filter 2: Business Unit -->
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">เลือกกลุ่มธุรกิจ</label>
+            <select id="filter-bu" onchange="onBuChange()" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              <option value="">-- ทุกกลุ่มธุรกิจ --</option>
+            </select>
+          </div>
+
+          <!-- Filter 3: Project Selector -->
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">เลือกโครงการที่ต้องการดู</label>
+            <select id="select-project" onchange="onProjectSelect()" class="w-full bg-emerald-50 border border-emerald-300 text-slate-900 font-medium rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              <option value="">-- กำลังโหลดรายชื่อโครงการ --</option>
+            </select>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Selected Project Detail Card -->
+      <div id="project-detail-container" class="space-y-6">
+        
+        <!-- Project Header Info -->
+        <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div class="flex items-center space-x-2">
+                <span class="text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-800" id="prj-lot-badge">Lot 1</span>
+                <span class="text-xs font-medium px-2.5 py-1 rounded-md bg-slate-100 text-slate-700" id="prj-bu-badge">กลุ่มธุรกิจ</span>
+                <span class="text-xs font-medium px-2.5 py-1 rounded-md bg-blue-50 text-blue-700" id="prj-type-badge">Type 19</span>
+              </div>
+              <h2 class="text-2xl font-bold text-slate-900 mt-2" id="prj-name">ชื่อโครงการ</h2>
+              <p class="text-xs text-slate-500 mt-1" id="prj-install-type">Solar Installation Type • 0.00 kWp</p>
+            </div>
+
+            <!-- Progress & Actions -->
+            <div class="flex items-center space-x-3">
+              <div class="text-right">
+                <p class="text-xs text-slate-400 font-medium">ผลงานจริง / แผนงาน</p>
+                <div class="flex items-baseline space-x-1 justify-end">
+                  <span class="text-2xl font-bold text-emerald-600" id="prj-act-pct">0%</span>
+                  <span class="text-sm font-semibold text-slate-400" id="prj-plan-pct">/ 0%</span>
+                </div>
+                <span id="prj-status-pill" class="inline-block mt-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">ตามแผนงาน</span>
+              </div>
+              
+              <!-- PDF Report Button -->
+              <button onclick="generateProjectPDF()" id="btn-gen-pdf" class="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2.5 rounded-xl text-sm font-semibold transition shadow-sm flex items-center space-x-1.5" title="พิมพ์หรือดาวน์โหลดรายงานสรุปโครงการ">
+                <i data-lucide="file-text" class="w-4 h-4"></i>
+                <span>Gen Report (PDF)</span>
+              </button>
+
+              <!-- Quick Update Button -->
+              <button onclick="openQuickUpdateModal()" class="bg-[#064e3b] hover:bg-[#043327] text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition shadow-sm flex items-center space-x-2">
+                <i data-lucide="edit-3" class="w-4 h-4"></i>
+                <span>อัปเดตงาน</span>
+              </button>
+            </div>
+
+          </div>
+
+          <!-- Quick Metadata Grid -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 border-t border-slate-100 mt-5 pt-4 text-xs">
+            <div>
+              <p class="text-slate-400">วันที่เริ่มตามแผน</p>
+              <p class="font-semibold text-slate-700 mt-0.5" id="prj-plan-start">-</p>
+            </div>
+            <div>
+              <p class="text-slate-400">วันที่เสร็จตามแผน (COD)</p>
+              <p class="font-semibold text-slate-700 mt-0.5" id="prj-plan-finish">-</p>
+            </div>
+            <div>
+              <p class="text-slate-400">วันที่เริ่มจริง</p>
+              <p class="font-semibold text-slate-700 mt-0.5" id="prj-act-start">-</p>
+            </div>
+            <div>
+              <p class="text-slate-400">วันที่เสร็จจริง</p>
+              <p class="font-semibold text-slate-700 mt-0.5" id="prj-act-finish">-</p>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- S-CURVE INTERACTIVE CHART -->
+        <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 class="font-bold text-slate-800 text-lg flex items-center gap-2">
+                <i data-lucide="trending-up" class="w-5 h-5 text-emerald-600"></i>
+                <span>กราฟ S-Curve ความก้าวหน้าสะสม (Cumulative Planned vs Actual)</span>
+              </h3>
+              <p class="text-xs text-slate-500">เส้นสีน้ำเงินแสดงแผนงานสะสม (Planned S-Curve), เส้นสีเขียวแสดงผลงานจริงสะสม (Actual S-Curve)</p>
+            </div>
+            <div class="flex items-center space-x-3 text-xs">
+              <span class="flex items-center gap-1.5"><span class="w-3 h-1 bg-blue-600 rounded"></span> แผนงาน (Plan)</span>
+              <span class="flex items-center gap-1.5"><span class="w-3 h-1 bg-emerald-500 rounded"></span> ผลงานจริง (Actual)</span>
+            </div>
+          </div>
+          
+          <div class="h-80 sm:h-96 w-full" id="project-scurve-chart"></div>
+        </div>
+
+        <!-- MILESTONE DETAILS TABLE -->
+        <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+          <div class="p-5 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h3 class="font-bold text-slate-800 text-base">รายละเอียดและสถานะ Milestone แต่ละขั้นตอน (จบที่ Punch list)</h3>
+              <p class="text-xs text-slate-500">แบ่งตามหมวดหมู่งานราชการ, ออกแบบ และงานก่อสร้างติดตั้ง</p>
+            </div>
+            <span class="text-xs text-slate-400" id="milestones-count-label">20+ Milestones</span>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-50 text-slate-600 uppercase font-semibold border-b border-slate-200">
+                <tr>
+                  <th class="py-3 px-4">ชื่องาน (Milestone Name)</th>
+                  <th class="py-3 px-3">หมวดหมู่งาน</th>
+                  <th class="py-3 px-3 text-center">ค่าน้ำหนัก (Weight)</th>
+                  <th class="py-3 px-3">แผนเริ่ม-เสร็จ</th>
+                  <th class="py-3 px-3">วันเริ่ม-เสร็จจริง</th>
+                  <th class="py-3 px-4 text-center">ความคืบหน้า (% Done)</th>
+                  <th class="py-3 px-3 text-center">สะสมในโครงการ</th>
+                  <th class="py-3 px-3 text-center">สถานะ</th>
+                  <th class="py-3 px-3 text-center">การกระทำ</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100" id="milestones-table-body">
+                <!-- Milestone rows injected here -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 3: COMPARISON & ANALYTICS -->
+    <!-- ========================================================================= -->
+    <div id="tab-comparison" class="hidden space-y-6">
+      
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+        <div>
+          <h3 class="font-bold text-slate-800 text-base">กราฟแท่งเปรียบเทียบความก้าวหน้าทุกล็อต (Multi-Project Comparison)</h3>
+          <p class="text-xs text-slate-500">วิเคราะห์ผลต่าง % Actual vs % Planned ของแต่ละโครงการ</p>
+        </div>
+        <select id="compare-lot-select" onchange="renderComparisonTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          <option value="ALL">แสดงทุกโครงการ (Top 25)</option>
+        </select>
+      </div>
+
+      <!-- Comparison Chart -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
+        <div class="h-96" id="comparison-bar-chart"></div>
+      </div>
+
+      <!-- Delayed Projects Watchlist -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div class="p-5 border-b border-slate-100">
+          <h3 class="font-bold text-rose-700 text-base flex items-center gap-2">
+            <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+            <span>ตารางติดตามโครงการที่ล่าช้ากว่าแผน (Delayed Projects Watchlist)</span>
+          </h3>
+          <p class="text-xs text-slate-500">โครงการที่มีผลต่างความคืบหน้าน้อยกว่าแผนงานมากกว่า 10%</p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-rose-50/60 text-slate-700 uppercase font-semibold border-b border-rose-100">
+              <tr>
+                <th class="py-3 px-4">โครงการ</th>
+                <th class="py-3 px-3">กลุ่มธุรกิจ</th>
+                <th class="py-3 px-3">Lot</th>
+                <th class="py-3 px-3">กำลังการผลิต (kWp)</th>
+                <th class="py-3 px-3 text-center">แผนงาน</th>
+                <th class="py-3 px-3 text-center">ผลงานจริง</th>
+                <th class="py-3 px-3 text-center">ความล่าช้า (Variance)</th>
+                <th class="py-3 px-3 text-center">การกระทำ</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100" id="delayed-table-body">
+              <!-- Delayed projects injected here -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 4: CCTV REAL-TIME -->
+    <!-- ========================================================================= -->
+    <div id="tab-cctv" class="hidden space-y-6">
+      
+      <!-- CCTV Header & Controls -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center space-x-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></span>
+            <h3 class="font-bold text-slate-900 text-lg">กล้องวงจรปิดหน้างานแบบเรียลไทม์ (CCTV Real-time)</h3>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">มอนิเตอร์ภาพสดความปลอดภัยและการก่อสร้างจากกล้อง IP Camera หน้างาน (รองรับ HLS / WebRTC / Snapshot)</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+          <select id="cctv-project-select" onchange="onCctvProjectChange()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+            <option value="">-- เลือกโครงการที่ต้องการดูกล้อง --</option>
+          </select>
+          <button onclick="openCctvConfigModal()" class="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-xl text-xs font-medium transition flex items-center space-x-1.5 shadow-sm">
+            <i data-lucide="settings-2" class="w-3.5 h-3.5 text-amber-400"></i>
+            <span>ตั้งค่าลิงก์สตรีมกล้อง</span>
+          </button>
+          <button onclick="reloadAllCctvCameras()" class="bg-[#064e3b] hover:bg-[#043327] text-white px-3 py-2 rounded-xl text-xs font-medium transition flex items-center space-x-1.5 shadow-sm">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            <span>รีโหลดกล้อง</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- CCTV Feeds Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5" id="cctv-grid-container">
+        
+        <!-- Camera 1 -->
+        <div class="bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-sm relative group flex flex-col justify-between">
+          <div class="aspect-video bg-slate-950 flex flex-col items-center justify-center text-slate-500 relative overflow-hidden">
+            <video id="cctv-video-1" class="w-full h-full object-cover hidden" autoplay muted playsinline></video>
+            <div id="cctv-placeholder-1" class="flex flex-col items-center justify-center p-6 text-center">
+              <i data-lucide="video" class="w-10 h-10 text-slate-700 mb-2"></i>
+              <p class="text-xs text-slate-400 font-medium">กำลังรอสัญญาณวิดีโอสตรีมมิ่ง (HLS / RTSP)</p>
+              <p class="text-[10px] text-slate-600 mt-1">กดปุ่ม 'ตั้งค่าลิงก์สตรีมกล้อง' ด้านบนเพื่อใส่ URL สตรีมจริง</p>
+            </div>
+            <!-- Live badge -->
+            <div class="absolute top-3 left-3 flex items-center space-x-2 bg-black/70 px-2.5 py-1 rounded-lg backdrop-blur-sm z-10">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span class="text-[11px] font-semibold text-white" id="cam-title-1">CAM 01 - Main Array</span>
+            </div>
+            <div class="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+              <button onclick="captureCctvSnapshot(1)" class="bg-black/60 hover:bg-black/80 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm transition flex items-center gap-1" title="บันทึกภาพถ่ายหน้างานเดี๋ยวนี้">
+                <i data-lucide="camera" class="w-3 h-3 text-amber-300"></i> Snapshot
+              </button>
+              <span class="bg-rose-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">LIVE</span>
+            </div>
+          </div>
+          <div class="p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+            <span>ความละเอียด: 1080p FHD (25 FPS)</span>
+            <span class="text-emerald-400 font-medium flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Online</span>
+          </div>
+        </div>
+
+        <!-- Camera 2 -->
+        <div class="bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-sm relative group flex flex-col justify-between">
+          <div class="aspect-video bg-slate-950 flex flex-col items-center justify-center text-slate-500 relative overflow-hidden">
+            <video id="cctv-video-2" class="w-full h-full object-cover hidden" autoplay muted playsinline></video>
+            <div id="cctv-placeholder-2" class="flex flex-col items-center justify-center p-6 text-center">
+              <i data-lucide="video" class="w-10 h-10 text-slate-700 mb-2"></i>
+              <p class="text-xs text-slate-400 font-medium">กำลังรอสัญญาณวิดีโอสตรีมมิ่ง (HLS / RTSP)</p>
+              <p class="text-[10px] text-slate-600 mt-1">อาคารควบคุม Inverter Station & MDB</p>
+            </div>
+            <div class="absolute top-3 left-3 flex items-center space-x-2 bg-black/70 px-2.5 py-1 rounded-lg backdrop-blur-sm z-10">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span class="text-[11px] font-semibold text-white" id="cam-title-2">CAM 02 - Inverter Station</span>
+            </div>
+            <div class="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+              <button onclick="captureCctvSnapshot(2)" class="bg-black/60 hover:bg-black/80 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm transition flex items-center gap-1" title="บันทึกภาพถ่ายหน้างานเดี๋ยวนี้">
+                <i data-lucide="camera" class="w-3 h-3 text-amber-300"></i> Snapshot
+              </button>
+              <span class="bg-rose-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">LIVE</span>
+            </div>
+          </div>
+          <div class="p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+            <span>ความละเอียด: 1080p FHD (25 FPS)</span>
+            <span class="text-emerald-400 font-medium flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Online</span>
+          </div>
+        </div>
+
+        <!-- Camera 3 -->
+        <div class="bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-sm relative group flex flex-col justify-between">
+          <div class="aspect-video bg-slate-950 flex flex-col items-center justify-center text-slate-500 relative overflow-hidden">
+            <video id="cctv-video-3" class="w-full h-full object-cover hidden" autoplay muted playsinline></video>
+            <div id="cctv-placeholder-3" class="flex flex-col items-center justify-center p-6 text-center">
+              <i data-lucide="video" class="w-10 h-10 text-slate-700 mb-2"></i>
+              <p class="text-xs text-slate-400 font-medium">กำลังรอสัญญาณวิดีโอสตรีมมิ่ง (HLS / RTSP)</p>
+              <p class="text-[10px] text-slate-600 mt-1">ประตูทางเข้า-ออก & ขนส่งสินค้า</p>
+            </div>
+            <div class="absolute top-3 left-3 flex items-center space-x-2 bg-black/70 px-2.5 py-1 rounded-lg backdrop-blur-sm z-10">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span class="text-[11px] font-semibold text-white" id="cam-title-3">CAM 03 - Gate & Logistics</span>
+            </div>
+            <div class="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+              <button onclick="captureCctvSnapshot(3)" class="bg-black/60 hover:bg-black/80 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm transition flex items-center gap-1" title="บันทึกภาพถ่ายหน้างานเดี๋ยวนี้">
+                <i data-lucide="camera" class="w-3 h-3 text-amber-300"></i> Snapshot
+              </button>
+              <span class="bg-rose-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">LIVE</span>
+            </div>
+          </div>
+          <div class="p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+            <span>ความละเอียด: 1080p FHD (25 FPS)</span>
+            <span class="text-emerald-400 font-medium flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Online</span>
+          </div>
+        </div>
+
+        <!-- Camera 4 -->
+        <div class="bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-sm relative group flex flex-col justify-between">
+          <div class="aspect-video bg-slate-950 flex flex-col items-center justify-center text-slate-500 relative overflow-hidden">
+            <video id="cctv-video-4" class="w-full h-full object-cover hidden" autoplay muted playsinline></video>
+            <div id="cctv-placeholder-4" class="flex flex-col items-center justify-center p-6 text-center">
+              <i data-lucide="video" class="w-10 h-10 text-slate-700 mb-2"></i>
+              <p class="text-xs text-slate-400 font-medium">กำลังรอสัญญาณวิดีโอสตรีมมิ่ง (HLS / RTSP)</p>
+              <p class="text-[10px] text-slate-600 mt-1">มุมสูงภาพรวมพื้นที่โครงการ (PTZ Overview)</p>
+            </div>
+            <div class="absolute top-3 left-3 flex items-center space-x-2 bg-black/70 px-2.5 py-1 rounded-lg backdrop-blur-sm z-10">
+              <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+              <span class="text-[11px] font-semibold text-white" id="cam-title-4">CAM 04 - PTZ Overview</span>
+            </div>
+            <div class="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+              <button onclick="captureCctvSnapshot(4)" class="bg-black/60 hover:bg-black/80 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm transition flex items-center gap-1" title="บันทึกภาพถ่ายหน้างานเดี๋ยวนี้">
+                <i data-lucide="camera" class="w-3 h-3 text-amber-300"></i> Snapshot
+              </button>
+              <span class="bg-slate-700 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">STANDBY</span>
+            </div>
+          </div>
+          <div class="p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+            <span>ความละเอียด: 4K UHD (30 FPS)</span>
+            <span class="text-amber-400 font-medium flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Standby</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 5: INTEGRATION & SETTINGS -->
+    <!-- ========================================================================= -->
+    <div id="tab-integration" class="hidden space-y-6">
+      
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        
+        <!-- LINE LIFF Integration Card -->
+        <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <i data-lucide="message-square" class="w-6 h-6"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-900 text-base">การเชื่อมต่อ LINE Official Account & LIFF</h3>
+              <p class="text-xs text-slate-500">เปิดแบบฟอร์มป้อนข้อมูลผ่าน LINE บนมือถือ</p>
+            </div>
+          </div>
+
+          <div class="p-4 bg-emerald-50/60 rounded-xl border border-emerald-100 text-xs text-emerald-900 space-y-2">
+            <p class="font-semibold">ขั้นตอนการตั้งค่า LINE LIFF:</p>
+            <ol class="list-decimal list-inside space-y-1 text-slate-600">
+              <li>เปิด <a href="https://developers.line.biz" target="_blank" class="text-emerald-700 underline font-medium">LINE Developers Console</a> แล้วสร้าง Channel "LINE Login"</li>
+              <li>ไปที่แท็บ <strong>LIFF</strong> > กด <strong>Add LIFF App</strong></li>
+              <li>ใส่ <strong>Endpoint URL</strong> เป็น URL หน้านี้: <code class="bg-white px-1.5 py-0.5 rounded border text-emerald-700 font-mono" id="liff-url-text">http://localhost:8000/liff</code></li>
+              <li>นำ <strong>LIFF ID</strong> ที่ได้มาผูกใน Rich Menu หรือส่งให้วิศวกรหน้างานเปิดใช้งานได้ทันที</li>
+            </ol>
+          </div>
+
+          <a href="/liff" target="_blank" class="w-full flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 rounded-xl text-sm transition">
+            <i data-lucide="external-link" class="w-4 h-4"></i>
+            <span>ทดลองเปิดแบบฟอร์ม LINE LIFF บนหน้าเว็บ</span>
+          </a>
+        </div>
+
+        <!-- Google Sheets Integration Card -->
+        <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <i data-lucide="table-2" class="w-6 h-6"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-900 text-base">การเชื่อมต่อ Google Sheets แบบ 2-Way Realtime</h3>
+              <p class="text-xs text-slate-500">ให้ Google Sheets และ Dashboard ซิงค์ข้อมูลอัตโนมัติ</p>
+            </div>
+          </div>
+
+          <div class="p-5 bg-slate-50 rounded-2xl border border-slate-200 text-xs space-y-4 text-slate-700">
+            <div class="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div>
+                <h4 class="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                  <i data-lucide="refresh-cw" class="w-4 h-4 text-emerald-600"></i>
+                  <span>การเชื่อมต่อ Google Sheets 2-Way (อ่าน & เขียนอัตโนมัติ):</span>
+                </h4>
+                <p class="text-[11px] text-slate-500 mt-0.5">เชื่อมต่อให้ระบบอ่านและเขียนข้อมูลกลับเข้าชีตได้ทันที</p>
+              </div>
+              <span class="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-1 rounded-full">2-Way Sync Active</span>
+            </div>
+
+            <!-- Input 1: Google Sheet Read URL -->
+            <div class="space-y-1.5">
+              <label class="block font-semibold text-slate-800 flex items-center gap-1">
+                <i data-lucide="eye" class="w-3.5 h-3.5 text-blue-600"></i>
+                <span>1. ลิงก์ Google Sheet (สำหรับอ่านข้อมูลสด & กราฟ S-Curve):</span>
+              </label>
+              <div class="flex gap-2">
+                <input type="text" id="gsheet-url-input" placeholder="https://docs.google.com/spreadsheets/d/.../edit" class="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono">
+                <button onclick="saveAndSyncGoogleSheet()" id="btn-sync-gsheet" class="bg-emerald-700 hover:bg-emerald-800 text-white font-semibold px-4 py-2 rounded-xl text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-sm">
+                  <i data-lucide="download-cloud" class="w-3.5 h-3.5"></i>
+                  <span>ดึงข้อมูลเดี๋ยวนี้</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Input 2: Google Apps Script Web App URL for Writing -->
+            <div class="space-y-1.5 pt-2 border-t border-slate-200/60">
+              <label class="block font-semibold text-slate-800 flex items-center gap-1">
+                <i data-lucide="edit-3" class="w-3.5 h-3.5 text-amber-600"></i>
+                <span>2. Google Apps Script Web App URL (สำหรับเขียนข้อมูลกลับเข้าชีตอัตโนมัติ):</span>
+              </label>
+              <div class="flex gap-2">
+                <input type="text" id="webapp-url-input" placeholder="https://script.google.com/macros/s/.../exec" class="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono">
+                <button onclick="saveWebAppUrl()" id="btn-save-webapp" class="bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2 rounded-xl text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-sm">
+                  <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                  <span>บันทึกลิงก์เขียน</span>
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-500 mt-1">
+                💡 <strong>วิธีเอาลิงก์เขียน:</strong> ใน Google Sheet ไปที่ <strong>ส่วนขยาย > Apps Script > Deploy > Manage deployments</strong> > คัดลอก <strong>Web app URL</strong> มาวางที่ช่องนี้ เมื่อกดแก้ไขบนหน้าเว็บ ข้อมูลจะวิ่งไปเขียนลงเซลล์ใน Google Sheet ทันทีครับ!
+              </p>
+            </div>
+          </div>
+            <div class="pt-2 border-t border-slate-200 text-[11px] text-slate-500">
+              <span class="font-medium text-slate-700">ขั้นตอนการ Deploy ใน Google Sheet:</span> ไปที่ ส่วนขยาย > Apps Script > กด Deploy > New deployment > เลือกประเภท Web App (Execute as Me, Access Anyone) > คัดลอก URL มาวางในช่องด้านบน
+            </div>
+          </div>
+
+          <!-- Activity Audit Log & Backup Management Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Activity Audit Log (2 Cols) -->
+        <div class="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-2.5">
+              <div class="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+                <i data-lucide="history" class="w-4 h-4"></i>
+              </div>
+              <div>
+                <h3 class="font-bold text-slate-900 text-sm">ประวัติการอัปเดตงานล่าสุด (Activity Audit Log)</h3>
+                <p class="text-[11px] text-slate-500">บันทึกการแก้ไขทุกครั้งจาก Web Dashboard, LINE LIFF, Google Sheets และ Webhook</p>
+              </div>
+            </div>
+            <button onclick="loadActivityLogs()" class="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition" title="รีเฟรชประวัติ">
+              <i data-lucide="rotate-cw" class="w-4 h-4"></i>
+            </button>
+          </div>
+
+          <div class="overflow-x-auto max-h-72 custom-scroll border border-slate-100 rounded-xl">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-50 text-slate-600 uppercase font-semibold sticky top-0 border-b border-slate-200 text-[10px]">
+                <tr>
+                  <th class="py-2.5 px-3">เวลา</th>
+                  <th class="py-2.5 px-3">โครงการ</th>
+                  <th class="py-2.5 px-3">Milestone</th>
+                  <th class="py-2.5 px-2 text-center">% Done</th>
+                  <th class="py-2.5 px-3">ผู้รายงาน</th>
+                  <th class="py-2.5 px-2 text-center">ช่องทาง</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 font-sans" id="tab5-activity-logs-body">
+                <!-- Injected via app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Cloud Backup & Snapshot Manager (1 Col) -->
+        <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center space-x-2.5 mb-2">
+              <div class="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <i data-lucide="database-backup" class="w-4 h-4"></i>
+              </div>
+              <div>
+                <h3 class="font-bold text-slate-900 text-sm">ระบบสำรองข้อมูล (Data Backup)</h3>
+                <p class="text-[11px] text-slate-500">Snapshot แคชข้อมูล 137 โครงการ</p>
+              </div>
+            </div>
+
+            <p class="text-xs text-slate-600 leading-relaxed">
+              ระบบทำการบันทึกแบบ <strong>Atomic Write</strong> ตลอดเวลา และสามารถสร้าง Snapshot จุดกู้คืนได้ทุกเวลา
+            </p>
+
+            <div class="mt-3 space-y-1.5 max-h-36 overflow-y-auto custom-scroll" id="backups-list-container">
+              <!-- Injected via app.js -->
+            </div>
+          </div>
+
+          <button onclick="triggerManualBackup()" id="btn-create-backup" class="w-full mt-3 bg-indigo-700 hover:bg-indigo-800 text-white font-semibold py-2.5 px-4 rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-1.5">
+            <i data-lucide="hard-drive-download" class="w-3.5 h-3.5"></i>
+            <span>สร้าง Snapshot สำรองข้อมูลเดี๋ยวนี้</span>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- LINE Flex Message Generator Preview Card -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2.5">
+            <div class="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <i data-lucide="send" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-900 text-sm">LINE Messaging API / Flex Message Card Generator</h3>
+              <p class="text-[11px] text-slate-500">โครงสร้าง Flex Bubble Card สำหรับส่งแจ้งเตือนเข้า LINE Official Account อัตโนมัติ</p>
+            </div>
+          </div>
+          <button onclick="copyLineFlexJson()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium transition flex items-center gap-1">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i> คัดลอก JSON Flex Message
+          </button>
+        </div>
+        <div class="p-3 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded-xl overflow-x-auto max-h-40" id="flex-json-preview">
+          // กำลังโหลดตัวอย่าง Flex Message...
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- HIDDEN PRINTABLE CONTAINER FOR PDF REPORT -->
+  <div id="printable-report" style="position: absolute; left: -99999px; top: 0; width: 210mm; background: #ffffff; z-index: -9999;"></div>
+
+  <!-- QUICK UPDATE MODAL -->
+  <div id="update-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div>
+          <h3 class="font-bold text-slate-900 text-base" id="modal-title">อัปเดตความก้าวหน้า Milestone</h3>
+          <p class="text-xs text-slate-500" id="modal-subtitle">โครงการ: -</p>
+        </div>
+        <button onclick="closeQuickUpdateModal()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <form id="modal-update-form" onsubmit="handleModalSubmit(event)" class="space-y-4 text-xs">
+        
+        <!-- Security Authorization Banner -->
+        <div class="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 flex items-center gap-2">
+          <i data-lucide="shield-check" class="w-4 h-4 text-amber-600 shrink-0"></i>
+          <span class="text-[11px]">การแก้ไขจะเขียนข้อมูลลง <strong>Google Sheet</strong> และ <strong>Web Dashboard</strong> พร้อมกัน</span>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">เลือก Milestone</label>
+          <select id="modal-milestone-select" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 font-medium"></select>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">ความก้าวหน้า (% Progress): <span id="modal-pct-display" class="text-emerald-700 font-bold">100%</span></label>
+          <input type="range" id="modal-pct-slider" min="0" max="100" value="100" oninput="document.getElementById('modal-pct-display').innerText = this.value + '%'" class="w-full accent-emerald-600">
+          <div class="flex justify-between text-slate-400 mt-1">
+            <button type="button" onclick="setModalPct(0)" class="hover:text-slate-800">0%</button>
+            <button type="button" onclick="setModalPct(25)" class="hover:text-slate-800">25%</button>
+            <button type="button" onclick="setModalPct(50)" class="hover:text-slate-800">50%</button>
+            <button type="button" onclick="setModalPct(75)" class="hover:text-slate-800">75%</button>
+            <button type="button" onclick="setModalPct(100)" class="hover:text-slate-800">100%</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">วันที่เริ่มจริง</label>
+            <input type="date" id="modal-start-date" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs">
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">วันที่เสร็จจริง</label>
+            <input type="date" id="modal-finish-date" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs">
+          </div>
+        </div>
+
+        <!-- Password Input -->
+        <div class="pt-1">
+          <label class="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
+            <span class="flex items-center gap-1"><i data-lucide="key-round" class="w-3.5 h-3.5 text-slate-500"></i> รหัสผ่านผู้แก้ไข (Editor Password):</span>
+            <span class="text-[10px] text-emerald-600 font-normal">รหัสผ่าน: KPGEditor</span>
+          </label>
+          <input type="password" id="modal-editor-password" placeholder="ใส่รหัสผ่าน KPGEditor เพื่อยืนยัน" required class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono">
+        </div>
+
+        <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+          <button type="button" onclick="closeQuickUpdateModal()" class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">ยกเลิก</button>
+          <button type="submit" id="modal-submit-btn" class="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-semibold shadow-sm flex items-center gap-1.5">
+            <i data-lucide="check" class="w-4 h-4"></i>
+            <span>ยืนยันและบันทึกข้อมูล 2-Way</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ACTIVITY LOG POPUP MODAL -->
+  <div id="activity-log-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+            <i data-lucide="history" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-slate-900 text-base">ประวัติการอัปเดตงานทั้งหมด (Activity Audit Trail)</h3>
+            <p class="text-xs text-slate-500">ตรวจสอบย้อนหลังทุกการเปลี่ยนแปลงของ 137 โครงการ</p>
+          </div>
+        </div>
+        <button onclick="closeActivityLogModal()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto custom-scroll border border-slate-100 rounded-xl">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-50 text-slate-600 uppercase font-semibold sticky top-0 border-b border-slate-200">
+            <tr>
+              <th class="py-2.5 px-3">วัน-เวลา</th>
+              <th class="py-2.5 px-3">โครงการ</th>
+              <th class="py-2.5 px-3">Milestone</th>
+              <th class="py-2.5 px-2 text-center">% ล่าสุด</th>
+              <th class="py-2.5 px-3">ผู้รายงาน</th>
+              <th class="py-2.5 px-2 text-center">ช่องทาง</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100" id="modal-activity-logs-body">
+            <!-- Injected via app.js -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex justify-between items-center pt-2 border-t border-slate-100 text-xs text-slate-500">
+        <span>แสดง 50 รายการล่าสุด</span>
+        <button onclick="closeActivityLogModal()" class="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">ปิด</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CCTV CONFIG MODAL -->
+  <div id="cctv-config-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="video" class="w-5 h-5 text-emerald-600"></i>
+          <h3 class="font-bold text-slate-900 text-base">ตั้งค่าลิงก์สตรีมกล้อง CCTV</h3>
+        </div>
+        <button onclick="closeCctvConfigModal()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <form id="cctv-config-form" onsubmit="handleCctvConfigSubmit(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">CAM 01 URL (Main Array):</label>
+          <input type="text" id="cfg-cam-1" placeholder="https://.../cam1.m3u8 หรือ RTSP Stream URL" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono">
+        </div>
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">CAM 02 URL (Inverter Station):</label>
+          <input type="text" id="cfg-cam-2" placeholder="https://.../cam2.m3u8 หรือ RTSP Stream URL" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono">
+        </div>
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">CAM 03 URL (Gate & Logistics):</label>
+          <input type="text" id="cfg-cam-3" placeholder="https://.../cam3.m3u8 หรือ RTSP Stream URL" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono">
+        </div>
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">CAM 04 URL (PTZ Overview):</label>
+          <input type="text" id="cfg-cam-4" placeholder="https://.../cam4.m3u8 หรือ RTSP Stream URL" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono">
+        </div>
+
+        <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-600">
+          💡 รองรับลิงก์ HLS (.m3u8), WebRTC Stream, หรือ Web Embed Stream จาก NVR / Cloud CCTV Gateway
+        </div>
+
+        <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+          <button type="button" onclick="closeCctvConfigModal()" class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">ยกเลิก</button>
+          <button type="submit" class="px-5 py-2.5 rounded-xl bg-[#043327] hover:bg-[#064e3b] text-white font-semibold shadow-sm">บันทึกการตั้งค่า</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 hidden bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-slate-700 flex items-center space-x-3 text-xs">
+    <div id="toast-icon"></div>
+    <span id="toast-msg">บันทึกสำเร็จ</span>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

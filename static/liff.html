@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="th" class="h-full bg-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>KPGreenergy Planner - LINE LIFF บันทึกหน้างาน</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- LINE LIFF SDK -->
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+
+  <style>
+    body {
+      font-family: 'Prompt', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col justify-between text-slate-800 antialiased">
+
+  <!-- Mobile Top Bar -->
+  <div class="bg-gradient-to-r from-emerald-700 to-teal-800 text-white p-4 shadow-md sticky top-0 z-40">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center space-x-2.5">
+        <div class="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center backdrop-blur-sm">
+          <i data-lucide="sun-medium" class="w-5 h-5 text-amber-300"></i>
+        </div>
+        <div>
+          <h1 class="font-bold text-base leading-tight">KPGreenergy Planner</h1>
+          <p class="text-[11px] text-emerald-200">แบบฟอร์มบันทึกหน้างานผ่าน LINE</p>
+        </div>
+      </div>
+      <a href="/" class="text-xs bg-white/20 hover:bg-white/30 text-white px-2.5 py-1 rounded-lg transition flex items-center gap-1">
+        <i data-lucide="layout-dashboard" class="w-3.5 h-3.5"></i> เว็บ
+      </a>
+    </div>
+  </div>
+
+  <!-- Form Container -->
+  <div class="flex-1 overflow-y-auto p-4 space-y-4 max-w-lg mx-auto w-full">
+    
+    <!-- Offline Alert / Queue Banner -->
+    <div id="liff-offline-banner" class="hidden p-3 bg-amber-500 text-white rounded-2xl shadow-sm text-xs flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <i data-lucide="wifi-off" class="w-4 h-4"></i>
+        <span>โหมดออฟไลน์: ทำงานได้ปกติ ข้อมูลจะถูกเก็บในเครื่อง</span>
+      </div>
+      <button onclick="syncOfflineQueue()" id="liff-sync-queue-btn" class="bg-white text-amber-900 font-bold px-2.5 py-1 rounded-lg text-[11px] shadow-sm">
+        ซิงค์เดี๋ยวนี้
+      </button>
+    </div>
+
+    <!-- Step 1: Select Lot & Project -->
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+      <div class="flex items-center space-x-2 text-emerald-800 font-bold text-sm">
+        <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs">1</span>
+        <span>เลือกโครงการ</span>
+      </div>
+
+      <div class="space-y-2">
+        <label class="block text-xs font-semibold text-slate-500">เฟส / Lot</label>
+        <select id="liff-lot-select" onchange="onLiffLotChange()" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500 font-medium">
+          <option value="">-- กำลังโหลดเฟส --</option>
+        </select>
+      </div>
+
+      <div class="space-y-2">
+        <label class="block text-xs font-semibold text-slate-500">ชื่อโครงการ</label>
+        <select id="liff-project-select" onchange="onLiffProjectChange()" class="w-full bg-emerald-50/50 border border-emerald-300 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500 font-semibold text-slate-900">
+          <option value="">-- เลือกโครงการ --</option>
+        </select>
+      </div>
+
+      <!-- Selected Project Info Pill -->
+      <div id="liff-project-pill" class="hidden p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+        <div class="flex justify-between">
+          <span class="text-slate-500">กลุ่มธุรกิจ:</span>
+          <span class="font-semibold text-slate-700" id="liff-info-bu">-</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-500">กำลังการผลิต:</span>
+          <span class="font-semibold text-slate-700" id="liff-info-cap">-</span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-slate-500">ความก้าวหน้าปัจจุบัน:</span>
+          <span class="font-bold text-emerald-600" id="liff-info-progress">0%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Select Milestone -->
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-3">
+      <div class="flex items-center space-x-2 text-emerald-800 font-bold text-sm">
+        <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs">2</span>
+        <span>เลือกรายการงาน (Milestone)</span>
+      </div>
+
+      <div class="space-y-2">
+        <select id="liff-milestone-select" onchange="onLiffMilestoneChange()" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500 font-medium">
+          <option value="">-- กรุณาเลือกโครงการก่อน --</option>
+        </select>
+      </div>
+
+      <div id="liff-milestone-info" class="hidden p-2.5 bg-amber-50 rounded-xl border border-amber-200 text-xs flex items-center justify-between text-amber-900">
+        <span>ค่าน้ำหนักงานนี้: <strong id="liff-m-weight">0.0%</strong></span>
+        <span id="liff-m-status" class="px-2 py-0.5 rounded-md bg-white font-semibold">รอดำเนินการ</span>
+      </div>
+    </div>
+
+    <!-- Step 3: Progress & Dates -->
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 space-y-4">
+      <div class="flex items-center space-x-2 text-emerald-800 font-bold text-sm">
+        <span class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs">3</span>
+        <span>บันทึกความคืบหน้า & วันที่</span>
+      </div>
+
+      <!-- Percentage Picker -->
+      <div class="space-y-2">
+        <div class="flex justify-between items-center">
+          <label class="text-xs font-semibold text-slate-600">ความสำเร็จของงาน (%):</label>
+          <span class="text-xl font-bold text-emerald-600" id="liff-pct-val">100%</span>
+        </div>
+        <input type="range" id="liff-pct-slider" min="0" max="100" value="100" oninput="setLiffPct(this.value)" class="w-full accent-emerald-600 h-2 bg-slate-200 rounded-lg cursor-pointer">
+        
+        <!-- Quick Tap Buttons -->
+        <div class="grid grid-cols-5 gap-1.5 pt-1">
+          <button type="button" onclick="setLiffPct(0)" class="py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition">0%</button>
+          <button type="button" onclick="setLiffPct(25)" class="py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition">25%</button>
+          <button type="button" onclick="setLiffPct(50)" class="py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition">50%</button>
+          <button type="button" onclick="setLiffPct(75)" class="py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition">75%</button>
+          <button type="button" onclick="setLiffPct(100)" class="py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold shadow-sm transition">100%</button>
+        </div>
+      </div>
+
+      <!-- Dates -->
+      <div class="grid grid-cols-2 gap-3 pt-2">
+        <div>
+          <label class="block text-xs font-semibold text-slate-500 mb-1">วันที่เริ่มจริง</label>
+          <input type="date" id="liff-start-date" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-500 mb-1">วันที่เสร็จจริง</label>
+          <input type="date" id="liff-finish-date" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+        </div>
+      </div>
+
+      <!-- Note -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 mb-1">หมายเหตุ / ผู้รายงาน</label>
+        <input type="text" id="liff-note" placeholder="เช่น นายวิศวกร หน้างานปกติ" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+      </div>
+
+      <!-- Password -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1 flex items-center justify-between">
+          <span>รหัสผ่านยืนยันการบันทึก (Password)</span>
+          <span class="text-emerald-700 font-semibold text-[10px]">รหัส: KPGEditor</span>
+        </label>
+        <input type="password" id="liff-password" placeholder="ใส่รหัสผ่าน KPGEditor เพื่อยืนยัน" value="KPGEditor" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-xs focus:ring-2 focus:ring-emerald-500 font-mono">
+      </div>
+
+    </div>
+
+    <!-- Submit Button -->
+    <div class="pt-2 pb-6">
+      <button type="button" onclick="submitLiffForm()" id="liff-submit-btn" class="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-2xl shadow-lg shadow-emerald-600/30 text-base transition flex items-center justify-center space-x-2">
+        <i data-lucide="check" class="w-5 h-5"></i>
+        <span>บันทึกความคืบหน้าเข้าระบบ</span>
+      </button>
+    </div>
+
+  </div>
+
+  <!-- Success Modal -->
+  <div id="liff-success-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center space-y-4">
+      <div class="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 mx-auto flex items-center justify-center">
+        <i data-lucide="check-circle" class="w-10 h-10"></i>
+      </div>
+      <div>
+        <h3 class="font-bold text-lg text-slate-900">บันทึกข้อมูลเรียบร้อยแล้ว!</h3>
+        <p class="text-xs text-slate-500 mt-1" id="liff-success-desc">ข้อมูลถูกอัปเดตลง Google Sheets และหน้า Dashboard เรียบร้อย</p>
+      </div>
+      <div class="pt-2 flex flex-col gap-2">
+        <button onclick="resetLiffForNext()" class="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition">
+          บันทึกรายการอื่นต่อ
+        </button>
+        <a href="/" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-sm transition">
+          ดูผลในหน้าเว็บ Dashboard
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/liff.js"></script>
+</body>
+</html>
