@@ -630,7 +630,7 @@ function renderMilestonesTable(milestones) {
 
 // =========================================================================
 // =========================================================================
-// TAB 3: MULTI-PROJECT COMPARISON & ANALYTICS
+// TAB 3: MULTI-PROJECT COMPARISON & LOT DEEP DIVE ANALYTICS
 // =========================================================================
 function renderComparisonTab() {
   if (!allProjects || allProjects.length === 0) return;
@@ -639,31 +639,84 @@ function renderComparisonTab() {
   const lotSel = document.getElementById('compare-lot-select');
   if (lotSel && globalOverview && globalOverview.lots) {
     const currentVal = lotSel.value;
-    lotSel.innerHTML = '<option value="ALL">แสดงทุกโครงการ (Top 25 กำลังผลิต)</option>';
+    lotSel.innerHTML = '<option value="ALL">แสดงทุกโครงการ (ทุกล็อต)</option>';
     globalOverview.lots.forEach(lot => {
-      lotSel.innerHTML += `<option value="${lot}">${lot}</option>`;
+      lotSel.innerHTML += `<option value="${lot}">เฉพาะ ${lot}</option>`;
     });
     if (currentVal) lotSel.value = currentVal;
   }
   
   const selectedLot = lotSel ? lotSel.value : 'ALL';
   
-  // 2. Filter Projects for Comparison
+  // 2. Filter Projects specifically for the Selected Lot
   let targetProjects = [];
   if (selectedLot === 'ALL') {
-    targetProjects = [...allProjects]
-      .sort((a, b) => b.capacity_kwp - a.capacity_kwp)
-      .slice(0, 25);
+    targetProjects = [...allProjects];
   } else {
     targetProjects = allProjects.filter(p => p.lot === selectedLot);
   }
+
+  // 3. Calculate Lot-specific Summary KPIs
+  const lotProjectCount = targetProjects.length;
+  const lotTotalCapacity = targetProjects.reduce((sum, p) => sum + (p.capacity_kwp || 0), 0);
+  const lotWeightedPlan = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.planned_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
+  const lotWeightedAct = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.actual_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
+  const lotVariance = lotWeightedAct - lotWeightedPlan;
+
+  const lotCompleted = targetProjects.filter(p => p.status === 'COMPLETED' || p.actual_progress_pct >= 100).length;
+  const lotDelayed = targetProjects.filter(p => p.variance_pct < -0.1 || p.status === 'DELAYED').length;
+  const lotOnTrack = lotProjectCount - lotCompleted - lotDelayed;
+
+  // Update Lot KPI Cards
+  const kpiCountEl = document.getElementById('lot-kpi-count');
+  if (kpiCountEl) kpiCountEl.innerText = lotProjectCount;
   
-  const categories = targetProjects.map(p => p.name.length > 22 ? p.name.substring(0, 22) + '...' : p.name);
-  const plannedData = targetProjects.map(p => p.planned_progress_pct);
-  const actualData = targetProjects.map(p => p.actual_progress_pct);
+  const kpiCapEl = document.getElementById('lot-kpi-capacity');
+  if (kpiCapEl) kpiCapEl.innerText = Number(lotTotalCapacity.toFixed(1)).toLocaleString();
   
-  // 3. Render ApexCharts Horizontal Bar Comparison
-  const chartHeight = Math.max(400, targetProjects.length * 28);
+  const kpiActEl = document.getElementById('lot-kpi-actual');
+  if (kpiActEl) kpiActEl.innerText = lotWeightedAct.toFixed(1) + '%';
+  
+  const kpiPlanEl = document.getElementById('lot-kpi-planned');
+  if (kpiPlanEl) kpiPlanEl.innerText = '/ ' + lotWeightedPlan.toFixed(1) + '%';
+  
+  const kpiCompEl = document.getElementById('lot-kpi-completed');
+  if (kpiCompEl) kpiCompEl.innerText = `เสร็จ: ${lotCompleted}`;
+  
+  const kpiOnTrackEl = document.getElementById('lot-kpi-ontrack');
+  if (kpiOnTrackEl) kpiOnTrackEl.innerText = `ปกติ: ${lotOnTrack}`;
+  
+  const kpiDelEl = document.getElementById('lot-kpi-delayed');
+  if (kpiDelEl) kpiDelEl.innerText = `ช้า: ${lotDelayed}`;
+
+  const btnLotPdfText = document.getElementById('btn-lot-pdf-text');
+  if (btnLotPdfText) {
+    btnLotPdfText.innerText = selectedLot === 'ALL' ? 'พิมพ์รายงาน PDF ทุกล็อต' : `พิมพ์รายงาน PDF เฉพาะ ${selectedLot}`;
+  }
+
+  const chartLotTitle = document.getElementById('chart-lot-title');
+  if (chartLotTitle) {
+    chartLotTitle.innerText = selectedLot === 'ALL'
+      ? 'กราฟแท่งเปรียบเทียบความก้าวหน้าทุกล็อต (Top 25 ตามขนาดกำลังการผลิต)'
+      : `กราฟแท่งเปรียบเทียบความก้าวหน้ารายไซต์ใน ${selectedLot} (${lotProjectCount} ไซต์, รวม ${Number(lotTotalCapacity.toFixed(1)).toLocaleString()} kWp)`;
+  }
+  
+  // 4. Prepare Data for Bar Chart (Includes Installed Capacity kWp in Category)
+  const chartProjects = selectedLot === 'ALL' 
+    ? [...targetProjects].sort((a, b) => b.capacity_kwp - a.capacity_kwp).slice(0, 25) 
+    : targetProjects;
+
+  const categories = chartProjects.map(p => {
+    const capStr = `[${Number(p.capacity_kwp).toLocaleString()} kWp]`;
+    const shortName = p.name.length > 24 ? p.name.substring(0, 24) + '...' : p.name;
+    return `${shortName} ${capStr}`;
+  });
+
+  const plannedData = chartProjects.map(p => p.planned_progress_pct);
+  const actualData = chartProjects.map(p => p.actual_progress_pct);
+  
+  // 5. Render ApexCharts Horizontal Bar Comparison
+  const chartHeight = Math.max(380, chartProjects.length * 32);
   const compOptions = {
     series: [
       {
@@ -692,7 +745,7 @@ function renderComparisonTab() {
     colors: ['#2563eb', '#10b981'],
     dataLabels: {
       enabled: true,
-      offsetX: 16,
+      offsetX: 18,
       style: { fontSize: '9px', colors: ['#334155'], fontWeight: 600 },
       formatter: val => val + '%'
     },
@@ -706,11 +759,24 @@ function renderComparisonTab() {
     yaxis: {
       labels: {
         style: { fontSize: '11px', fontWeight: 600, colors: '#0f172a' },
-        maxWidth: 180
+        maxWidth: 240
       }
     },
     tooltip: {
-      y: { formatter: val => val + '%' }
+      custom: function({series, seriesIndex, dataPointIndex, w}) {
+        const prj = chartProjects[dataPointIndex];
+        if (!prj) return '';
+        return `
+          <div class="p-3 bg-slate-900 text-white rounded-xl shadow-xl text-xs space-y-1">
+            <div class="font-bold text-amber-400 border-b border-slate-700 pb-1">${prj.name}</div>
+            <div>กำลังการผลิต: <span class="font-bold text-emerald-400">${Number(prj.capacity_kwp).toLocaleString()} kWp</span> (${prj.installation_type || 'Solar'})</div>
+            <div>กลุ่มธุรกิจ: <b>${prj.business_unit || '-'}</b> | Lot: <b>${prj.lot}</b></div>
+            <div class="text-blue-300">แผนงานสะสม: <b>${prj.planned_progress_pct}%</b></div>
+            <div class="text-emerald-300">ผลงานจริงสะสม: <b>${prj.actual_progress_pct}%</b></div>
+            <div>ผลต่าง (Variance): <b class="${prj.variance_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${prj.variance_pct >= 0 ? '+' : ''}${prj.variance_pct}%</b></div>
+          </div>
+        `;
+      }
     },
     legend: {
       position: 'top',
@@ -727,37 +793,68 @@ function renderComparisonTab() {
     comparisonBarChart.render();
   }
   
-  // 4. Render Delayed Projects Watchlist Table
-  const tbody = document.getElementById('delayed-table-body');
+  // 6. Render Sites Table specifically for the Selected Lot
+  const tableTitle = document.getElementById('comparison-table-title');
+  if (tableTitle) {
+    tableTitle.innerHTML = `<i data-lucide="table-2" class="w-5 h-5 text-emerald-700"></i> <span>${selectedLot === 'ALL' ? 'ตารางรายชื่อโครงการทั้งหมด (137 โครงการ)' : `ตารางรายชื่อไซต์งานใน ${selectedLot} (เฉพาะ Lot ที่เลือก)`}</span>`;
+  }
+  
+  const tableSubtitle = document.getElementById('comparison-table-subtitle');
+  if (tableSubtitle) {
+    tableSubtitle.innerText = selectedLot === 'ALL'
+      ? 'แสดงข้อมูลโครงการทั้งหมดในระบบ พร้อมกำลังการผลิต และความคืบหน้า'
+      : `แสดงเฉพาะ ${lotProjectCount} ไซต์ใน ${selectedLot} กำลังการผลิตรวม ${Number(lotTotalCapacity.toFixed(1)).toLocaleString()} kWp`;
+  }
+
+  const tableCount = document.getElementById('comparison-table-count');
+  if (tableCount) {
+    tableCount.innerText = `${lotProjectCount} โครงการ`;
+  }
+
+  const tbody = document.getElementById('comparison-table-body');
   if (tbody) {
     tbody.innerHTML = '';
-    const delayedProjects = [...allProjects]
-      .filter(p => p.variance_pct < -0.1 || p.status === 'DELAYED')
-      .sort((a, b) => a.variance_pct - b.variance_pct);
-      
-    if (delayedProjects.length === 0) {
+    if (targetProjects.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="8" class="text-center py-6 text-emerald-700 font-semibold">
-            🎉 ยอดเยี่ยมมาก! ไม่มีโครงการที่ล่าช้ากว่าแผนงานในขณะนี้
+          <td colspan="10" class="text-center py-6 text-slate-400">
+            ไม่พบโครงการใน Lot นี้
           </td>
         </tr>
       `;
     } else {
-      delayedProjects.forEach(p => {
+      targetProjects.forEach((p, idx) => {
         const tr = document.createElement('tr');
-        tr.className = 'hover:bg-rose-50/40 transition';
+        tr.className = 'hover:bg-slate-50 transition text-xs';
+        
+        let statusBadge = '';
+        if (p.status === 'COMPLETED' || p.actual_progress_pct >= 100) {
+          statusBadge = '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">เสร็จสมบูรณ์</span>';
+        } else if (p.status === 'DELAYED' || p.variance_pct < -0.1) {
+          statusBadge = `<span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-semibold">ล่าช้า ${p.variance_pct}%</span>`;
+        } else {
+          statusBadge = '<span class="px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-semibold">ตามแผนงาน</span>';
+        }
+
         tr.innerHTML = `
-          <td class="py-3 px-4 font-bold text-slate-900">${p.name}</td>
-          <td class="py-3 px-3 text-slate-600">${p.business_unit}</td>
-          <td class="py-3 px-3"><span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold">${p.lot}</span></td>
-          <td class="py-3 px-3 font-mono font-medium">${p.capacity_kwp}</td>
+          <td class="py-3 px-3 text-center text-slate-400 font-mono">${idx + 1}</td>
+          <td class="py-3 px-4 font-bold text-slate-900">
+            <div>${p.name}</div>
+            <div class="text-[10px] text-slate-400 font-normal">Order: ${p.order_no || '-'} | Lot: ${p.lot}</div>
+          </td>
+          <td class="py-3 px-3 text-slate-600">${p.business_unit || '-'}</td>
+          <td class="py-3 px-3"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px]">${p.installation_type || 'Solar'}</span></td>
+          <td class="py-3 px-3 text-right font-mono font-bold text-amber-700">${Number(p.capacity_kwp).toLocaleString()}</td>
           <td class="py-3 px-3 text-center font-mono text-blue-600 font-semibold">${p.planned_progress_pct}%</td>
-          <td class="py-3 px-3 text-center font-mono text-emerald-600 font-semibold">${p.actual_progress_pct}%</td>
-          <td class="py-3 px-3 text-center font-mono font-bold text-rose-600">${p.variance_pct}%</td>
+          <td class="py-3 px-3 text-center font-mono text-emerald-600 font-bold">${p.actual_progress_pct}%</td>
+          <td class="py-3 px-3 text-center font-mono font-bold ${p.variance_pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
+            ${p.variance_pct >= 0 ? '+' : ''}${p.variance_pct}%
+          </td>
+          <td class="py-3 px-3 text-center">${statusBadge}</td>
           <td class="py-3 px-3 text-center">
-            <button onclick="openProjectFromComparison('${p.id}')" class="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-semibold transition">
-              ดูโครงการ
+            <button onclick="openProjectFromComparison('${p.id}')" class="px-2.5 py-1 rounded-lg bg-[#043327] hover:bg-[#064e3b] text-white text-[11px] font-semibold transition flex items-center gap-1 mx-auto">
+              <span>ดูโครงการ</span>
+              <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
             </button>
           </td>
         `;
@@ -765,11 +862,274 @@ function renderComparisonTab() {
       });
     }
   }
+
+  lucide.createIcons();
 }
 
 function openProjectFromComparison(projectId) {
   selectProject(projectId);
   switchTab('project');
+}
+
+// =========================================================================
+// LOT-SPECIFIC PDF REPORT GENERATOR (Executive Lot Progress Report)
+// =========================================================================
+async function generateLotPDF() {
+  const lotSel = document.getElementById('compare-lot-select');
+  const selectedLot = lotSel ? lotSel.value : 'ALL';
+  
+  const targetProjects = selectedLot === 'ALL'
+    ? [...allProjects]
+    : allProjects.filter(p => p.lot === selectedLot);
+
+  if (targetProjects.length === 0) {
+    showToast('ไม่พบข้อมูลโครงการใน Lot ที่เลือก', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('btn-gen-lot-pdf');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="animate-spin mr-1">⏳</span> กำลังสร้าง PDF เฉพาะ ${selectedLot}...`;
+  }
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
+  const lotProjectCount = targetProjects.length;
+  const lotTotalCapacity = targetProjects.reduce((sum, p) => sum + (p.capacity_kwp || 0), 0);
+  const lotWeightedPlan = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.planned_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
+  const lotWeightedAct = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.actual_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
+  const lotVariance = lotWeightedAct - lotWeightedPlan;
+  const lotCompleted = targetProjects.filter(p => p.status === 'COMPLETED' || p.actual_progress_pct >= 100).length;
+  const lotDelayed = targetProjects.filter(p => p.variance_pct < -0.1 || p.status === 'DELAYED').length;
+  const lotOnTrack = lotProjectCount - lotCompleted - lotDelayed;
+
+  // 1. Capture Comparison Chart Image
+  let chartImgUri = '';
+  try {
+    if (comparisonBarChart && typeof comparisonBarChart.dataURI === 'function') {
+      const res = await comparisonBarChart.dataURI();
+      chartImgUri = res.imgURI || '';
+    }
+  } catch (e) {
+    console.warn("Could not capture chart as image:", e);
+  }
+
+  // 2. Build Site Table Rows for PDF
+  let tableRows = '';
+  targetProjects.forEach((p, idx) => {
+    const bgRow = (idx % 2 === 1) ? '#f8fafc' : '#ffffff';
+    let statusText = 'ตามแผนงาน';
+    let statusColor = '#1e40af';
+    let statusBg = '#dbeafe';
+    if (p.status === 'COMPLETED' || p.actual_progress_pct >= 100) {
+      statusText = 'เสร็จสมบูรณ์';
+      statusColor = '#065f46';
+      statusBg = '#d1fae5';
+    } else if (p.status === 'DELAYED' || p.variance_pct < -0.1) {
+      statusText = `ล่าช้า ${p.variance_pct}%`;
+      statusColor = '#9f1239';
+      statusBg = '#ffe4e6';
+    }
+
+    tableRows += `
+      <tr style="background: ${bgRow}; border-bottom: 1px solid #cbd5e1; font-size: 8px; line-height: 1.15;">
+        <td style="padding: 4px; text-align: center; color: #64748b; font-weight: 600; width: 4%;">${idx + 1}</td>
+        <td style="padding: 4px 6px; font-weight: 700; color: #0f172a; width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p.name}</td>
+        <td style="padding: 4px; text-align: center; color: #475569; width: 14%;">${p.business_unit || '-'}</td>
+        <td style="padding: 4px; text-align: center; color: #475569; width: 12%;">${p.installation_type || 'Solar'}</td>
+        <td style="padding: 4px 6px; text-align: right; font-weight: 700; color: #b45309; font-family: monospace; width: 12%;">${Number(p.capacity_kwp).toLocaleString()}</td>
+        <td style="padding: 4px; text-align: center; color: #2563eb; font-weight: 600; width: 8%;">${p.planned_progress_pct}%</td>
+        <td style="padding: 4px; text-align: center; color: #059669; font-weight: 700; width: 8%;">${p.actual_progress_pct}%</td>
+        <td style="padding: 4px; text-align: center; font-weight: 700; color: ${p.variance_pct >= 0 ? '#059669' : '#e11d48'}; width: 8%;">
+          ${p.variance_pct >= 0 ? '+' : ''}${p.variance_pct}%
+        </td>
+      </tr>
+    `;
+  });
+
+  // 3. Construct Printable HTML (Exact 210mm x 297mm A4)
+  const reportContainer = document.getElementById('printable-report');
+  reportContainer.innerHTML = `
+    <div id="pdf-lot-root" style="width: 210mm; margin: 0; padding: 0; background: #ffffff; color: #0f172a; font-family: 'Prompt', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; box-sizing: border-box;">
+      
+      <!-- PAGE 1: LOT EXECUTIVE OVERVIEW -->
+      <div style="width: 210mm; height: 295mm; max-height: 295mm; padding: 8mm 10mm; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; background: #ffffff; overflow: hidden;">
+        <div>
+          <!-- Header Bar -->
+          <div style="background: #043327; color: #ffffff; border-radius: 6px; padding: 8px 14px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <div style="background: #f59e0b; width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px;">⚡</div>
+              <div>
+                <h1 style="font-size: 16px; font-weight: 800; margin: 0; color: #ffffff;">KPGreenergy Planner</h1>
+                <p style="font-size: 9px; color: #a7f3d0; margin: 1px 0 0 0;">รายงานความก้าวหน้ากลุ่มโครงการราย Lot (Executive Lot Progress Report)</p>
+              </div>
+            </div>
+            <div style="text-align: right; font-size: 9px; color: #e2e8f0;">
+              <div>วันที่ออกรายงาน: <strong style="color: #ffffff;">${dateStr}</strong></div>
+              <div style="margin-top: 1px;">กลุ่มที่เลือก: <strong style="color: #fef08a;">${selectedLot === 'ALL' ? 'ทุกล็อต / ทุกโครงการ' : selectedLot}</strong></div>
+            </div>
+          </div>
+
+          <!-- Lot Identity & KPI Cards -->
+          <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; margin-bottom: 6px;">
+              <div>
+                <span style="font-size: 8px; text-transform: uppercase; font-weight: 700; color: #64748b;">กลุ่มโครงการที่เลือก (Selected Lot / Phase)</span>
+                <h2 style="font-size: 15px; font-weight: 800; margin: 1px 0 0 0; color: #043327;">${selectedLot === 'ALL' ? 'ภาพรวมทุกล็อต (All 137 Solar Projects)' : selectedLot}</h2>
+              </div>
+              <div style="text-align: right;">
+                <span style="background: #d1fae5; color: #065f46; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: 700;">
+                  เสร็จสิ้น ${lotCompleted} / ${lotProjectCount} โครงการ
+                </span>
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 9px;">
+              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
+                <span style="color: #64748b; font-size: 8px;">จำนวนไซต์ใน Lot:</span><br>
+                <strong style="color: #0f172a; font-size: 12px;">${lotProjectCount} โครงการ</strong>
+              </div>
+              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
+                <span style="color: #64748b; font-size: 8px;">กำลังการผลิตรวม:</span><br>
+                <strong style="color: #b45309; font-size: 12px;">${Number(lotTotalCapacity.toFixed(1)).toLocaleString()} kWp</strong>
+              </div>
+              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
+                <span style="color: #64748b; font-size: 8px;">ผลงานจริงเฉลี่ย (Weighted):</span><br>
+                <strong style="color: #059669; font-size: 12px;">${lotWeightedAct.toFixed(1)}%</strong>
+              </div>
+              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
+                <span style="color: #64748b; font-size: 8px;">แผนงานเฉลี่ย (Weighted):</span><br>
+                <strong style="color: #2563eb; font-size: 12px;">${lotWeightedPlan.toFixed(1)}%</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Comparison Bar Chart Section -->
+          <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <h3 style="font-size: 10px; font-weight: 700; color: #043327; margin: 0;">กราฟแท่งเปรียบเทียบ % Plan vs % Actual รายไซต์ (พร้อมกำลังการผลิต kWp)</h3>
+              <span style="font-size: 7.5px; color: #64748b;">■ สีน้ำเงิน: แผนงาน | ■ สีเขียว: ผลงานจริง</span>
+            </div>
+            <div style="text-align: center;">
+              ${chartImgUri ? `<img src="${chartImgUri}" style="width: 100%; max-height: 125mm; object-fit: contain; margin: 0 auto;" />` : '<div style="padding: 40px; color: #94a3b8; font-size: 10px;">(กราฟเปรียบเทียบความก้าวหน้ารายไซต์)</div>'}
+            </div>
+          </div>
+
+          <!-- Summary Sites Table (First Batch) -->
+          <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr style="background: #043327; color: #ffffff; font-size: 8px; text-transform: uppercase;">
+                  <th style="padding: 4px; text-align: center; width: 4%;">#</th>
+                  <th style="padding: 4px 6px; text-align: left; width: 34%;">ชื่อไซต์งาน</th>
+                  <th style="padding: 4px; text-align: center; width: 14%;">กลุ่มธุรกิจ</th>
+                  <th style="padding: 4px; text-align: center; width: 12%;">ประเภทติดตั้ง</th>
+                  <th style="padding: 4px 6px; text-align: right; width: 12%;">กำลังผลิต (kWp)</th>
+                  <th style="padding: 4px; text-align: center; width: 8%;">แผนงาน</th>
+                  <th style="padding: 4px; text-align: center; width: 8%;">ผลงานจริง</th>
+                  <th style="padding: 4px; text-align: center; width: 8%;">ผลต่าง</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tableRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="border-top: 1px solid #cbd5e1; padding-top: 5px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 7.5px; color: #64748b;">
+          <span>⚡ เอกสารรายงานความก้าวหน้าโครงการ KPGreenergy (จัดทำเฉพาะ ${selectedLot})</span>
+          <span>หน้า 1 / 1 (Executive Summary)</span>
+        </div>
+      </div>
+
+    </div>
+  `;
+
+  // 4. Generate PDF via html2pdf
+  const opt = {
+    margin: 0,
+    filename: `KPGreenergy_Report_${selectedLot.replace(/\s+/g, '_')}_${now.toISOString().slice(0,10)}.pdf`,
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true, logging: false },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+  };
+
+  try {
+    const element = document.getElementById('pdf-lot-root');
+    await html2pdf().set(opt).from(element).save();
+    showToast(`สร้างรายงาน PDF เฉพาะ ${selectedLot} สำเร็จเรียบร้อย!`);
+  } catch (err) {
+    console.error("PDF generation failed:", err);
+    showToast("เกิดข้อผิดพลาดในการสร้าง PDF: " + err.message, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+      lucide.createIcons();
+    }
+  }
+}
+
+// =========================================================================
+// EXPORT CSV FOR SELECTED LOT ONLY
+// =========================================================================
+function exportLotCSV() {
+  const lotSel = document.getElementById('compare-lot-select');
+  const selectedLot = lotSel ? lotSel.value : 'ALL';
+  
+  const targetProjects = selectedLot === 'ALL'
+    ? [...allProjects]
+    : allProjects.filter(p => p.lot === selectedLot);
+
+  if (targetProjects.length === 0) {
+    showToast('ไม่พบข้อมูลโครงการใน Lot ที่เลือก', 'error');
+    return;
+  }
+
+  const headers = [
+    "No", "Project_Name", "Order_No", "Lot", "Business_Unit", "Type_Code",
+    "Installation_Type", "Capacity_kWp", "Planned_Progress_Pct", "Actual_Progress_Pct",
+    "Variance_Pct", "Status", "Planned_Start", "Planned_Finish", "Actual_Start", "Actual_Finish"
+  ];
+
+  let csvContent = "\ufeff" + headers.join(",") + "\n";
+
+  targetProjects.forEach((p, idx) => {
+    const row = [
+      idx + 1,
+      `"${(p.name || '').replace(/"/g, '""')}"`,
+      `"${p.order_no || ''}"`,
+      `"${p.lot || ''}"`,
+      `"${p.business_unit || ''}"`,
+      `"${p.type_code || ''}"`,
+      `"${p.installation_type || ''}"`,
+      p.capacity_kwp || 0,
+      p.planned_progress_pct || 0,
+      p.actual_progress_pct || 0,
+      p.variance_pct || 0,
+      `"${p.status_th || p.status || ''}"`,
+      `"${p.planned_start || ''}"`,
+      `"${p.planned_finish || ''}"`,
+      `"${p.actual_start || ''}"`,
+      `"${p.actual_finish || ''}"`
+    ];
+    csvContent += row.join(",") + "\n";
+  });
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `KPGreenergy_Export_${selectedLot.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  showToast(`ส่งออกไฟล์ CSV เฉพาะ ${selectedLot} สำเร็จเรียบร้อย!`);
 }
 
 

@@ -421,50 +421,122 @@
     </div>
 
     <!-- ========================================================================= -->
-    <!-- TAB 3: COMPARISON & ANALYTICS -->
+    <!-- TAB 3: COMPARISON & ANALYTICS (ราย Lot & เปรียบเทียบไซต์) -->
     <!-- ========================================================================= -->
     <div id="tab-comparison" class="hidden space-y-6">
       
-      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+      <!-- Lot Selection & Report Control Bar -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h3 class="font-bold text-slate-800 text-base">กราฟแท่งเปรียบเทียบความก้าวหน้าทุกล็อต (Multi-Project Comparison)</h3>
-          <p class="text-xs text-slate-500">วิเคราะห์ผลต่าง % Actual vs % Planned ของแต่ละโครงการ</p>
+          <div class="flex items-center space-x-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
+            <h3 class="font-bold text-slate-800 text-base" id="compare-tab-heading">ความก้าวหน้ารายไซต์และกลุ่มโครงการ (Lot Deep Dive & Comparison)</h3>
+          </div>
+          <p class="text-xs text-slate-500 mt-0.5">เลือก Lot เพื่อวิเคราะห์กำลังการผลิต (kWp) และเปรียบเทียบ % Plan vs % Actual ทุกไซต์</p>
         </div>
-        <select id="compare-lot-select" onchange="renderComparisonTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
-          <option value="ALL">แสดงทุกโครงการ (Top 25)</option>
-        </select>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+          <!-- Lot Selector -->
+          <div class="flex items-center space-x-2">
+            <label class="text-xs font-semibold text-slate-600">เลือก Lot:</label>
+            <select id="compare-lot-select" onchange="renderComparisonTab()" class="bg-emerald-50/70 border border-emerald-300 text-slate-900 rounded-xl px-3 py-2 text-xs font-semibold focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+              <option value="ALL">แสดงทุกโครงการ (Top 25 กำลังผลิต)</option>
+            </select>
+          </div>
+
+          <!-- Report PDF Button for Selected Lot -->
+          <button id="btn-gen-lot-pdf" onclick="generateLotPDF()" class="bg-[#043327] hover:bg-[#064e3b] text-white px-3.5 py-2 rounded-xl text-xs font-semibold shadow-sm transition flex items-center gap-1.5">
+            <i data-lucide="file-text" class="w-4 h-4 text-amber-400"></i>
+            <span id="btn-lot-pdf-text">พิมพ์รายงาน PDF เฉพาะ Lot นี้</span>
+          </button>
+
+          <!-- Export CSV Button for Selected Lot -->
+          <button onclick="exportLotCSV()" class="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-xl text-xs font-semibold shadow-sm transition flex items-center gap-1.5">
+            <i data-lucide="download" class="w-4 h-4 text-emerald-400"></i>
+            <span>Export CSV</span>
+          </button>
+        </div>
       </div>
 
-      <!-- Comparison Chart -->
-      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
-        <div class="h-96" id="comparison-bar-chart"></div>
+      <!-- Lot KPI Summary Cards (Dynamic for Selected Lot) -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4" id="lot-summary-cards">
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
+          <p class="text-xs font-medium text-slate-500">จำนวนไซต์ใน Lot นี้</p>
+          <div class="flex items-baseline space-x-1.5 mt-1">
+            <span class="text-2xl font-bold text-slate-900" id="lot-kpi-count">0</span>
+            <span class="text-xs text-slate-400">โครงการ</span>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
+          <p class="text-xs font-medium text-slate-500">กำลังการผลิตติดตั้งรวม</p>
+          <div class="flex items-baseline space-x-1.5 mt-1">
+            <span class="text-2xl font-bold text-amber-600" id="lot-kpi-capacity">0</span>
+            <span class="text-xs text-slate-400">kWp</span>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
+          <p class="text-xs font-medium text-slate-500">ผลงานจริง / แผนงานเฉลี่ย</p>
+          <div class="flex items-baseline space-x-1 mt-1">
+            <span class="text-2xl font-bold text-emerald-600" id="lot-kpi-actual">0%</span>
+            <span class="text-xs text-slate-400" id="lot-kpi-planned">/ 0%</span>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
+          <p class="text-xs font-medium text-slate-500">สถานะโครงการใน Lot</p>
+          <div class="flex items-center gap-2 mt-2 text-xs font-medium">
+            <span class="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md" id="lot-kpi-completed">เสร็จ: 0</span>
+            <span class="text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md" id="lot-kpi-ontrack">ปกติ: 0</span>
+            <span class="text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md" id="lot-kpi-delayed">ช้า: 0</span>
+          </div>
+        </div>
       </div>
 
-      <!-- Delayed Projects Watchlist -->
+      <!-- Comparison Chart with Site Capacities -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-2">
+        <div class="flex items-center justify-between">
+          <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+            <i data-lucide="bar-chart-3" class="w-4 h-4 text-emerald-600"></i>
+            <span id="chart-lot-title">กราฟแท่งเปรียบเทียบความก้าวหน้า (% Plan vs % Actual) รายไซต์งาน</span>
+          </h4>
+          <span class="text-xs text-slate-400">แสดงขนาดกำลังการผลิต (kWp) ที่ชื่อไซต์</span>
+        </div>
+        <div class="w-full min-h-[380px]" id="comparison-bar-chart"></div>
+      </div>
+
+      <!-- Site List Table specifically for the Selected Lot -->
       <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
-        <div class="p-5 border-b border-slate-100">
-          <h3 class="font-bold text-rose-700 text-base flex items-center gap-2">
-            <i data-lucide="alert-triangle" class="w-5 h-5"></i>
-            <span>ตารางติดตามโครงการที่ล่าช้ากว่าแผน (Delayed Projects Watchlist)</span>
-          </h3>
-          <p class="text-xs text-slate-500">โครงการที่มีผลต่างความคืบหน้าน้อยกว่าแผนงานมากกว่า 10%</p>
+        <div class="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h3 class="font-bold text-slate-900 text-base flex items-center gap-2" id="comparison-table-title">
+              <i data-lucide="table-2" class="w-5 h-5 text-emerald-700"></i>
+              <span>ตารางรายการไซต์งานใน Lot ที่เลือก (Site Progress List)</span>
+            </h3>
+            <p class="text-xs text-slate-500 mt-0.5" id="comparison-table-subtitle">แสดงข้อมูลโครงการทั้งหมดใน Lot พร้อมกำลังการผลิต และความคืบหน้า</p>
+          </div>
+          <span class="text-xs font-semibold px-3 py-1 rounded-full bg-slate-100 text-slate-700 font-mono" id="comparison-table-count">0 โครงการ</span>
         </div>
+
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs">
-            <thead class="bg-rose-50/60 text-slate-700 uppercase font-semibold border-b border-rose-100">
+            <thead class="bg-slate-50 text-slate-700 uppercase font-semibold border-b border-slate-200 text-[11px]">
               <tr>
-                <th class="py-3 px-4">โครงการ</th>
+                <th class="py-3 px-3 text-center">#</th>
+                <th class="py-3 px-4">ชื่อโครงการ / ไซต์งาน</th>
                 <th class="py-3 px-3">กลุ่มธุรกิจ</th>
-                <th class="py-3 px-3">Lot</th>
-                <th class="py-3 px-3">กำลังการผลิต (kWp)</th>
+                <th class="py-3 px-3">ประเภทติดตั้ง</th>
+                <th class="py-3 px-3 text-right">กำลังผลิต (kWp)</th>
                 <th class="py-3 px-3 text-center">แผนงาน</th>
                 <th class="py-3 px-3 text-center">ผลงานจริง</th>
-                <th class="py-3 px-3 text-center">ความล่าช้า (Variance)</th>
+                <th class="py-3 px-3 text-center">ผลต่าง (Variance)</th>
+                <th class="py-3 px-3 text-center">สถานะ</th>
                 <th class="py-3 px-3 text-center">การกระทำ</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-100" id="delayed-table-body">
-              <!-- Delayed projects injected here -->
+            <tbody class="divide-y divide-slate-100 font-sans" id="comparison-table-body">
+              <!-- Lot sites injected dynamically here -->
             </tbody>
           </table>
         </div>
