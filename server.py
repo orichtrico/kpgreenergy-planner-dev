@@ -346,40 +346,111 @@ async def handle_webhook(request: Request):
             )
             return {"status": "ok", "updated": eng_res, "project_id": p_id}
 
-    if action in ["sheet_edited", "on_edit"]:
+    if action in ["sheet_edited", "on_edit", "update_milestone", "save_progress"]:
+        row = body.get("row")
+        order_no = body.get("order_no")
+        p_id = body.get("project_id")
         p_name = str(body.get("project_name", "")).strip().lower()
+        m_idx = body.get("milestone_index")
         m_name = str(body.get("milestone_name", "")).strip()
-        val_str = str(body.get("new_value", "0")).replace("%", "").strip()
-        try:
-            val_pct = float(val_str)
-            if val_pct > 1.0:
-                val_pct = val_pct / 100.0
-        except:
-            val_pct = 0.0
+        
+        val_pct = 0.0
+        if body.get("actual_pct") is not None:
+            try:
+                val_pct = float(str(body.get("actual_pct")).replace("%", "").strip())
+                if val_pct > 1.0:
+                    val_pct = val_pct / 100.0
+            except:
+                val_pct = 0.0
+        elif body.get("new_value") is not None:
+            try:
+                val_pct = float(str(body.get("new_value")).replace("%", "").strip())
+                if val_pct > 1.0:
+                    val_pct = val_pct / 100.0
+            except:
+                val_pct = 0.0
+
+        # Match Project
+        target_p = None
+        if row and isinstance(row, int) and row >= 5 and (row - 5) < len(engine.projects):
+            target_p = engine.projects[row - 5]
+        elif order_no:
+            for p in engine.projects:
+                if str(p.get("order_no", "")).strip() == str(order_no).strip():
+                    target_p = p
+                    break
+        elif p_id and p_id in engine.projects_dict:
+            target_p = engine.projects_dict[p_id]
+        elif p_name:
+            for p in engine.projects:
+                if p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower():
+                    target_p = p
+                    break
+
+        if not target_p:
+            return {"status": "error", "message": "Project not found"}
+
+        # Match Milestone
+        target_m = None
+        if m_idx is not None and isinstance(m_idx, int) and 0 <= m_idx < len(target_p.get("milestones", [])):
+            target_m = target_p["milestones"][m_idx]
+        elif m_name:
+            for m in target_p.get("milestones", []):
+                if m["name"].strip().lower() == m_name.lower() or m_name.lower() in m["name"].strip().lower():
+                    target_m = m
+                    break
+
+        if not target_m:
+            return {"status": "error", "message": "Milestone not found"}
+
+        # Update Milestone
+        target_m["actual_pct"] = max(0.0, min(1.0, val_pct))
+        if body.get("actual_start"):
+            target_m["actual_start"] = str(body.get("actual_start"))
+        if body.get("actual_finish"):
+            target_m["actual_finish"] = str(body.get("actual_finish"))
+        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
+        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
+
+        # Recalculate Project Stats
+        total_act = sum(m["actual_contribution"] for m in target_p["milestones"])
+        target_p["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
+        target_p["variance_pct"] = round(target_p["actual_progress_pct"] - target_p["planned_progress_pct"], 2)
+        if target_p["actual_progress_pct"] >= 99.9:
+            target_p["status"] = "COMPLETED"
+            target_p["status_th"] = "เสร็จสมบูรณ์"
+        elif target_p["variance_pct"] >= 0:
+            target_p["status"] = "ON_TRACK"
+            target_p["status_th"] = "ตามแผนงาน"
+        elif target_p["variance_pct"] >= -10:
+            target_p["status"] = "SLIGHT_DELAY"
+            target_p["status_th"] = "ล่าช้าเล็กน้อย"
+        else:
+            target_p["status"] = "DELAYED"
+            target_p["status_th"] = "ล่าช้ากว่าแผน"
             
-        p_id = None
-        for p in engine.projects:
-            if p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower():
-                p_id = p["id"]
-                break
-                
-        if p_id and m_name:
-            eng_res = engine.update_milestone(
-                project_id=p_id,
-                milestone_name=m_name,
-                actual_pct=val_pct
-            )
-            p_obj = engine.projects_dict.get(p_id, {})
-            engine.log_activity(
-                project_id=p_id,
-                project_name=p_obj.get("name", p_name),
-                milestone_name=m_name,
-                actual_pct=val_pct,
-                updated_by="Google Sheet Edit",
-                note=f"แก้ไขผ่านเซลล์ใน Google Sheet ({val_pct*100:.1f}%)",
-                source="Google Sheet"
-            )
-            return {"status": "ok", "updated": eng_res, "project_id": p_id, "new_pct": val_pct}
+        target_p["s_curve"] = engine.generate_project_scurve(target_p)
+        engine.save_to_cache()
+
+        # Audit Log
+        engine.log_activity(
+            project_id=target_p["id"],
+            project_name=target_p["name"],
+            milestone_name=target_m["name"],
+            actual_pct=target_m["actual_pct"],
+            actual_start=target_m.get("actual_start"),
+            actual_finish=target_m.get("actual_finish"),
+            updated_by=body.get("updated_by", "Google Sheet onEdit"),
+            note=f"แก้ไขผ่านเซลล์ใน Google Sheet ({val_pct*100:.1f}%)",
+            source="Google Sheet Webhook"
+        )
+        return {
+            "status": "ok",
+            "project_id": target_p["id"],
+            "milestone": target_m["name"],
+            "new_pct": val_pct,
+            "actual_progress_pct": target_p["actual_progress_pct"]
+        }
             
     return {"status": "received", "body": body}
 

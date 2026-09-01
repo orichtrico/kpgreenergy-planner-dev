@@ -50,24 +50,10 @@ function onEdit(e) {
 }
 
 /**
- * 2. GET Request: ดึงข้อมูลเป็น JSON หรือรับคำสั่งอัปเดต (GET Fallback)
+ * 2. GET Request: ดึงข้อมูลเป็น JSON ความเร็วสูง
  */
 function doGet(e) {
   try {
-    // 2.1 หากมี parameter update_milestone ส่งมาแบบ GET ให้เขียนลงเซลล์ทันที
-    if (e && e.parameter && e.parameter.action === "update_milestone") {
-      return handleUpdateMilestone({
-        project_name: e.parameter.project_name,
-        milestone_name: e.parameter.milestone_name,
-        actual_pct: e.parameter.actual_pct,
-        actual_start: e.parameter.actual_start,
-        actual_finish: e.parameter.actual_finish,
-        updated_by: e.parameter.updated_by || "Web User",
-        note: e.parameter.note || "อัปเดตผ่าน Web Dashboard"
-      });
-    }
-
-    // 2.2 โหลดรายการโครงการทั้งหมด 137 โครงการ
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const planSheet = ss.getSheetByName("Plan");
     const progSheet = ss.getSheetByName("data Progress");
@@ -137,13 +123,13 @@ function doGet(e) {
 
       projects.push({
         id: "prj_" + ("000" + (r - 3)).slice(-3),
-        business_unit: String(planData[r][4] || planData[r][0] || ""),
+        business_unit: String(planData[r][0] || ""),
         order_no: planData[r][1],
         name: prjName,
         lot: String(planData[r][3] || ""),
-        capacity_kwp: Number(planData[r][6] || planData[r][4]) || 0,
+        capacity_kwp: Number(planData[r][4]) || 0,
         installation_type: String(planData[r][5] || ""),
-        type_code: String(planData[r][5] || "1"),
+        type_code: Number(planData[r][6]) || 1,
         milestones: mList
       });
     }
@@ -165,22 +151,9 @@ function doGet(e) {
  */
 function doPost(e) {
   try {
-    if (!e || !e.postData || !e.postData.contents) {
-      return createJsonResponse({ status: "error", message: "Missing POST body" });
-    }
     const data = JSON.parse(e.postData.contents);
-    return handleUpdateMilestone(data);
-  } catch (err) {
-    return createJsonResponse({ status: "error", message: err.toString() });
-  }
-}
-
-/**
- * 4. Shared Update Engine: เขียนค่าลง Google Sheet ทันที
- */
-function handleUpdateMilestone(data) {
-  try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
+    
     const projectName = String(data.project_name || "").trim();
     const milestoneName = String(data.milestone_name || "").trim();
     let actualPct = parseFloat(data.actual_pct || 0);
@@ -189,7 +162,7 @@ function handleUpdateMilestone(data) {
     const actualStart = data.actual_start || "";
     const actualFinish = data.actual_finish || "";
     const note = data.note || "อัปเดตผ่านระบบ";
-    const updatedBy = data.updated_by || "Web User";
+    const updatedBy = data.updated_by || "LINE User";
 
     const progSheet = ss.getSheetByName("data Progress");
     const logSheet = ss.getSheetByName("Log_Updates");
@@ -202,7 +175,6 @@ function handleUpdateMilestone(data) {
     const lastCol = progSheet.getLastColumn();
     const progData = progSheet.getRange(1, 1, lastRow, lastCol).getValues();
 
-    // หาแถวของโครงการ (Col C = Index 2)
     let targetRow = -1;
     for (let r = 4; r < progData.length; r++) {
       if (String(progData[r][2] || "").trim().toLowerCase() === projectName.toLowerCase()) {
@@ -215,7 +187,6 @@ function handleUpdateMilestone(data) {
       return createJsonResponse({ status: "error", message: "ไม่พบโครงการ: " + projectName });
     }
 
-    // หาคอลัมน์ของ Milestone (Row 3 = Index 2)
     const headerRow3 = progData[2];
     let targetCol = -1;
     for (let c = 7; c < headerRow3.length; c += 3) {
@@ -230,12 +201,10 @@ function handleUpdateMilestone(data) {
       return createJsonResponse({ status: "error", message: "ไม่พบคอลัมน์ Milestone: " + milestoneName });
     }
 
-    // เขียนค่าลงเซลล์
     if (actualStart) progSheet.getRange(targetRow, targetCol).setValue(actualStart);
     if (actualFinish) progSheet.getRange(targetRow, targetCol + 1).setValue(actualFinish);
     progSheet.getRange(targetRow, targetCol + 2).setValue(actualPct);
 
-    // บันทึกลง Audit Log ถ้ามีชีต
     if (logSheet) {
       const nowStr = Utilities.formatDate(new Date(), "Asia/Bangkok", "yyyy-MM-dd HH:mm:ss");
       logSheet.appendRow([nowStr, updatedBy, projectName, milestoneName, (actualPct * 100).toFixed(0) + "%", actualStart, actualFinish, note, "2-Way API"]);
@@ -243,7 +212,7 @@ function handleUpdateMilestone(data) {
 
     return createJsonResponse({
       status: "success",
-      message: "อัปเดต " + milestoneName + " ของ " + projectName + " สำเร็จ (" + (actualPct * 100).toFixed(0) + "%)"
+      message: "อัปเดต " + milestoneName + " ของ " + projectName + " สำเร็จ (" + (actualPct * 100) + "%)"
     });
 
   } catch (err) {
