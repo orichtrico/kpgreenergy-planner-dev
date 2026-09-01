@@ -1,5 +1,18 @@
 [
   {
+    "id": "log_20260902023851387",
+    "timestamp": "2026-09-02 02:38:51",
+    "project_id": "prj_001",
+    "project_name": "ฟาร์มสุกรขุนเขาหินซ้อน",
+    "milestone_name": "CPF ส่งมอบพื้นที่และยินยอมการใช้ที่ดิน ATV",
+    "actual_pct": 100.0,
+    "actual_start": "2025-08-15",
+    "actual_finish": "2025-08-30",
+    "updated_by": "Web Dashboard Auto-Test",
+    "note": "อัปเดตความก้าวหน้า 100.0%",
+    "source": "Web Dashboard"
+  },
+  {
     "id": "log_20260902021351185",
     "timestamp": "2026-09-02 02:13:51",
     "project_id": "prj_001",

@@ -175,25 +175,43 @@ function doPost(e) {
     const lastCol = progSheet.getLastColumn();
     const progData = progSheet.getRange(1, 1, lastRow, lastCol).getValues();
 
+    // 1. หาแถวของโครงการ (จาก order_no, project_id หรือ project_name)
     let targetRow = -1;
     for (let r = 4; r < progData.length; r++) {
-      if (String(progData[r][2] || "").trim().toLowerCase() === projectName.toLowerCase()) {
+      const rowOrder = String(progData[r][1] || "").trim();
+      const rowName = String(progData[r][2] || "").trim().toLowerCase();
+      const rowId = "prj_" + ("000" + (r - 3)).slice(-3);
+
+      if (orderNo && rowOrder === orderNo) {
+        targetRow = r + 1;
+        break;
+      }
+      if (projectId && (projectId === rowId || projectId === String(r - 3))) {
+        targetRow = r + 1;
+        break;
+      }
+      if (projectName && (rowName === projectName || rowName.includes(projectName) || projectName.includes(rowName))) {
         targetRow = r + 1;
         break;
       }
     }
 
     if (targetRow === -1) {
-      return createJsonResponse({ status: "error", message: "ไม่พบโครงการ: " + projectName });
+      return createJsonResponse({ status: "error", message: "ไม่พบโครงการ: " + (orderNo || projectName || projectId) });
     }
 
-    const headerRow3 = progData[2];
+    // 2. หาคอลัมน์ของ Milestone (จาก milestone_index 0-32 หรือชื่อ Milestone)
     let targetCol = -1;
-    for (let c = 7; c < headerRow3.length; c += 3) {
-      const title = String(headerRow3[c] || "").trim().toLowerCase();
-      if (title === milestoneName.toLowerCase() || title.includes(milestoneName.toLowerCase()) || milestoneName.toLowerCase().includes(title)) {
-        targetCol = c + 1;
-        break;
+    if (milestoneIdx >= 0 && milestoneIdx < 33) {
+      targetCol = 8 + (milestoneIdx * 3);
+    } else {
+      const headerRow3 = progData[2];
+      for (let c = 7; c < headerRow3.length; c += 3) {
+        const title = String(headerRow3[c] || "").trim().toLowerCase();
+        if (title === milestoneName.toLowerCase() || title.includes(milestoneName.toLowerCase()) || milestoneName.toLowerCase().includes(title)) {
+          targetCol = c + 1;
+          break;
+        }
       }
     }
 

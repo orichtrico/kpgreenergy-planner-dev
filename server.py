@@ -36,15 +36,13 @@ app.add_middleware(
 )
 
 # Hardcoded Google Apps Script & Sheet 2-Way Sync URLs
-DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyXXxkATGwPOWbbGGJniiP8FTgr77QnR3VJHur5Sf_5-51fIhV2smCGEwCbqpmF8i3x/exec"
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyd6yl-DlKbY6xuXMUBWpBcUychl_5Av7AhDItbeodfISgPqCZHFOwWbZDFXOYm2MSO/exec"
 DEFAULT_GSHEET_URL = "https://docs.google.com/spreadsheets/d/1yCL9cvdxc26EPURkLxws937ZaLFIjI3XSHwQFel-JgE/edit?usp=sharing"
 
 # Initialize Engine
 engine = ProjectEngine()
-if not getattr(engine, "google_sheet_webapp_url", None) or not engine.google_sheet_webapp_url:
-    engine.google_sheet_webapp_url = DEFAULT_WEBAPP_URL
-if not getattr(engine, "google_sheet_url", None) or not engine.google_sheet_url:
-    engine.google_sheet_url = DEFAULT_GSHEET_URL
+engine.google_sheet_webapp_url = DEFAULT_WEBAPP_URL
+engine.google_sheet_url = DEFAULT_GSHEET_URL
 
 # Ensure static directory exists
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

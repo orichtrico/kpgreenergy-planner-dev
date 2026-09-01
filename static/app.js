@@ -1652,8 +1652,8 @@ async function handleModalSubmit(e) {
   const finishD = document.getElementById('modal-finish-date').value;
   const pwdInput = document.getElementById('modal-editor-password');
   const pwd = pwdInput ? pwdInput.value.trim() : (sessionStorage.getItem('kpg_auth_pwd') || '');
-  const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyXXxkATGwPOWbbGGJniiP8FTgr77QnR3VJHur5Sf_5-51fIhV2smCGEwCbqpmF8i3x/exec";
-  const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || DEFAULT_WEBAPP_URL;
+  const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyd6yl-DlKbY6xuXMUBWpBcUychl_5Av7AhDItbeodfISgPqCZHFOwWbZDFXOYm2MSO/exec";
+  const savedSheetUrl = DEFAULT_WEBAPP_URL;
   
   if (!pwd) {
     showToast('กรุณาใส่รหัสผ่าน KPGEditor เพื่อบันทึกข้อมูล', 'error');
