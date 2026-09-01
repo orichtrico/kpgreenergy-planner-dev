@@ -1650,6 +1650,8 @@ async function handleModalSubmit(e) {
   const pct = parseFloat(document.getElementById('modal-pct-slider').value);
   const startD = document.getElementById('modal-start-date').value;
   const finishD = document.getElementById('modal-finish-date').value;
+  const pwdInput = document.getElementById('modal-editor-password');
+  const pwd = pwdInput ? pwdInput.value.trim() : (sessionStorage.getItem('kpg_auth_pwd') || '');
   const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyXXxkATGwPOWbbGGJniiP8FTgr77QnR3VJHur5Sf_5-51fIhV2smCGEwCbqpmF8i3x/exec";
   const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || DEFAULT_WEBAPP_URL;
   
@@ -1690,14 +1692,11 @@ async function handleModalSubmit(e) {
     // Remember password in session
     sessionStorage.setItem('kpg_auth_pwd', pwd);
     
-    // Refresh UI
+    // Refresh UI instantly in memory
     const targetPrjId = currentProject ? currentProject.id : null;
-    if (targetPrjId) {
-      delete projectDetailCache[targetPrjId];
-    }
     await loadInitialData();
     if (targetPrjId) {
-      await selectProject(targetPrjId);
+      selectProject(targetPrjId);
     }
     
   } catch (err) {
@@ -1709,6 +1708,61 @@ async function handleModalSubmit(e) {
     lucide.createIcons();
   }
 }
+
+// =========================================================================
+// REAL-TIME AUTO-SYNC BACKGROUND WORKER (No F5 required)
+// =========================================================================
+let currentLiveVersion = 0;
+let isLiveSyncing = false;
+
+async function checkLiveUpdates() {
+  if (isLiveSyncing) return;
+  try {
+    const res = await fetch('/api/live-sync-status');
+    if (!res.ok) return;
+    const data = await res.json();
+    
+    if (currentLiveVersion === 0) {
+      currentLiveVersion = data.version;
+      return;
+    }
+    
+    if (data.version > currentLiveVersion) {
+      isLiveSyncing = true;
+      currentLiveVersion = data.version;
+      
+      const [ovRes, prRes] = await Promise.all([
+        fetch('/api/overview'),
+        fetch('/api/projects')
+      ]);
+      
+      if (ovRes.ok && prRes.ok) {
+        globalOverview = await ovRes.json();
+        const pData = await prRes.json();
+        allProjects = pData.projects || [];
+        
+        renderKPIs();
+        renderPhaseOverviewTab();
+        renderComparisonTab();
+        
+        if (currentProject) {
+          const updated = allProjects.find(p => p.id === currentProject.id);
+          if (updated) {
+            currentProject = updated;
+            renderProjectDetail();
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Quiet offline
+  } finally {
+    isLiveSyncing = false;
+  }
+}
+
+// Start polling live status every 2.5 seconds
+setInterval(checkLiveUpdates, 2500);
 
 // =========================================================================
 // TAB 5: INTEGRATION & SIMULATOR

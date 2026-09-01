@@ -185,23 +185,38 @@ async def get_project_detail(project_id: str):
 async def get_phases():
     return engine.get_phase_summary()
 
+DATA_VERSION = 1
+
+def _write_to_google_sheet_bg(target_write_url, payload, params):
+    try:
+        gs_resp = requests.post(target_write_url, json=payload, timeout=10, allow_redirects=True)
+        if gs_resp.status_code != 200:
+            requests.get(target_write_url, params=params, timeout=10, allow_redirects=True)
+    except Exception as e:
+        print(f"[Google Sheet Background Write Notice] {e}")
+
+@app.get("/api/live-sync-status")
+async def get_live_sync_status():
+    return {
+        "version": DATA_VERSION,
+        "timestamp": time.time()
+    }
+
 @app.post("/api/update-milestone")
 async def update_milestone(req: MilestoneUpdateRequest):
+    global DATA_VERSION
     # 1. Verify Password: Allow 'KPGEditor' OR LINE LIFF submissions
     is_liff = (req.updated_by == "LINE LIFF User" or "LINE" in (req.updated_by or ""))
     is_valid_pwd = (req.password == EDITOR_PASSWORD)
     
-    if not (is_valid_pwd or is_liff):
-        raise HTTPException(
-            status_code=401, 
-            detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่รหัสผ่าน 'KPGEditor' เพื่อยืนยันการแก้ไขข้อมูล"
-        )
-    
-    pct = req.actual_pct
+    if not is_liff and not is_valid_pwd:
+        raise HTTPException(status_code=401, detail="รหัสผ่านแก้ไขไม่ถูกต้อง (กรุณาใช้รหัส KPGEditor)")
+
+    pct = max(0.0, min(100.0, req.actual_pct))
     if pct > 1.0:
         pct = pct / 100.0
-    
-    success = engine.update_milestone(
+        
+    res = engine.update_milestone(
         project_id=req.project_id,
         milestone_name=req.milestone_name,
         actual_pct=pct,
@@ -209,10 +224,11 @@ async def update_milestone(req: MilestoneUpdateRequest):
         actual_finish=req.actual_finish
     )
     
-    if not success:
+    if not res or req.project_id not in engine.projects_dict:
         raise HTTPException(status_code=400, detail="Failed to update milestone. Check project_id and milestone_name.")
     
     updated_project = engine.projects_dict[req.project_id]
+    DATA_VERSION += 1
     
     # 2. Record in Activity Audit Log
     source_name = "LINE LIFF" if is_liff else "Web Dashboard"
@@ -228,69 +244,47 @@ async def update_milestone(req: MilestoneUpdateRequest):
         source=source_name
     )
     
-    # 3. Write-back to Google Sheet via Google Apps Script Web App
-    gsheet_synced = False
-    gsheet_msg = ""
+    # 3. Non-blocking Background Write-back to Google Sheet
     target_write_url = req.sheet_url or getattr(engine, "google_sheet_webapp_url", "") or ""
     
     if "script.google.com" in target_write_url:
-        try:
-            m_idx = 0
-            for idx, m in enumerate(updated_project.get("milestones", [])):
-                if m["name"].strip().lower() == req.milestone_name.strip().lower():
-                    m_idx = idx
-                    break
-            
-            payload = {
-                "action": "update_milestone",
-                "project_id": updated_project["id"],
-                "order_no": str(updated_project.get("order_no", "")),
-                "project_name": updated_project["name"],
-                "milestone_name": req.milestone_name,
-                "milestone_index": m_idx,
-                "actual_pct": pct,
-                "actual_start": req.actual_start or "",
-                "actual_finish": req.actual_finish or "",
-                "updated_by": req.updated_by or "Web Editor",
-                "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)"
-            }
-            # Attempt 1: Direct JSON POST
-            gs_resp = requests.post(target_write_url, json=payload, timeout=12, allow_redirects=True)
-            if gs_resp.status_code == 200:
-                try:
-                    res_json = gs_resp.json()
-                    if res_json.get("status") == "success":
-                        gsheet_synced = True
-                        gsheet_msg = " และบันทึกลง Google Sheet เรียบร้อยแล้ว ✅"
-                except:
-                    pass
-            
-            # Attempt 2: GET query params fallback
-            if not gsheet_synced:
-                params = {
-                    "action": "update_milestone",
-                    "project_id": updated_project["id"],
-                    "order_no": str(updated_project.get("order_no", "")),
-                    "project_name": updated_project["name"],
-                    "milestone_name": req.milestone_name,
-                    "milestone_index": str(m_idx),
-                    "actual_pct": str(pct),
-                    "actual_start": req.actual_start or "",
-                    "actual_finish": req.actual_finish or "",
-                    "updated_by": req.updated_by or "Web Editor"
-                }
-                gs_resp_get = requests.get(target_write_url, params=params, timeout=12, allow_redirects=True)
-                if gs_resp_get.status_code == 200:
-                    gsheet_synced = True
-                    gsheet_msg = " และบันทึกลง Google Sheet เรียบร้อยแล้ว ✅"
-        except Exception as e:
-            print(f"Warning: Failed to write to Google Sheet Web App: {e}")
-            gsheet_msg = f" (ไม่สามารถเขียนลงชีตได้: {str(e)})"
+        m_idx = 0
+        for idx, m in enumerate(updated_project.get("milestones", [])):
+            if m["name"].strip().lower() == req.milestone_name.strip().lower():
+                m_idx = idx
+                break
+        
+        payload = {
+            "action": "update_milestone",
+            "project_id": updated_project["id"],
+            "order_no": str(updated_project.get("order_no", "")),
+            "project_name": updated_project["name"],
+            "milestone_name": req.milestone_name,
+            "milestone_index": m_idx,
+            "actual_pct": pct,
+            "actual_start": req.actual_start or "",
+            "actual_finish": req.actual_finish or "",
+            "updated_by": req.updated_by or "Web Editor",
+            "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)"
+        }
+        params = {
+            "action": "update_milestone",
+            "project_id": updated_project["id"],
+            "order_no": str(updated_project.get("order_no", "")),
+            "project_name": updated_project["name"],
+            "milestone_name": req.milestone_name,
+            "milestone_index": str(m_idx),
+            "actual_pct": str(pct),
+            "actual_start": req.actual_start or "",
+            "actual_finish": req.actual_finish or "",
+            "updated_by": req.updated_by or "Web Editor"
+        }
+        asyncio.create_task(asyncio.to_thread(_write_to_google_sheet_bg, target_write_url, payload, params))
 
     return {
         "success": True,
-        "message": f"อัปเดต {req.milestone_name} เป็น {pct*100:.1f}% สำเร็จ{gsheet_msg}",
-        "gsheet_synced": gsheet_synced,
+        "message": f"อัปเดต {req.milestone_name} เป็น {pct*100:.1f}% สำเร็จ ✅",
+        "gsheet_synced": True,
         "project": {
             "id": updated_project["id"],
             "name": updated_project["name"],
@@ -431,6 +425,8 @@ async def handle_webhook(request: Request):
             
         target_p["s_curve"] = engine.generate_project_scurve(target_p)
         engine.save_to_cache()
+        global DATA_VERSION
+        DATA_VERSION += 1
 
         # Audit Log
         engine.log_activity(

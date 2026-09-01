@@ -10,7 +10,7 @@ const WEBHOOK_DASHBOARD_URL = "https://kpgreenergy-planner.onrender.com/api/webh
 /**
  * 1. onEdit Trigger: เมื่อคุณพิมพ์แก้ % ใน Google Sheet ระบบจะส่งข้อมูลไปอัปเดตหน้าเว็บทันที!
  */
-function onEdit(e) {
+function installedOnEdit(e) {
   try {
     if (!e || !e.range) return;
     const sheet = e.range.getSheet();
