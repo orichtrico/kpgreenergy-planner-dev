@@ -1715,6 +1715,35 @@ async function handleModalSubmit(e) {
 let currentLiveVersion = 0;
 let isLiveSyncing = false;
 
+async function silentRefreshData() {
+  try {
+    const [ovRes, prRes] = await Promise.all([
+      fetch('/api/overview'),
+      fetch('/api/projects')
+    ]);
+    
+    if (ovRes.ok && prRes.ok) {
+      globalOverview = await ovRes.json();
+      const pData = await prRes.json();
+      allProjects = pData.projects || [];
+      
+      renderKPIs();
+      renderPhaseOverviewTab();
+      renderComparisonTab();
+      
+      if (currentProject) {
+        const updated = allProjects.find(p => p.id === currentProject.id);
+        if (updated) {
+          currentProject = updated;
+          renderProjectDetail();
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Silent refresh notice:", e);
+  }
+}
+
 async function checkLiveUpdates() {
   if (isLiveSyncing) return;
   try {
@@ -1724,35 +1753,17 @@ async function checkLiveUpdates() {
     
     if (currentLiveVersion === 0) {
       currentLiveVersion = data.version;
+      if (data.version > 1) {
+        isLiveSyncing = true;
+        await silentRefreshData();
+      }
       return;
     }
     
     if (data.version > currentLiveVersion) {
       isLiveSyncing = true;
       currentLiveVersion = data.version;
-      
-      const [ovRes, prRes] = await Promise.all([
-        fetch('/api/overview'),
-        fetch('/api/projects')
-      ]);
-      
-      if (ovRes.ok && prRes.ok) {
-        globalOverview = await ovRes.json();
-        const pData = await prRes.json();
-        allProjects = pData.projects || [];
-        
-        renderKPIs();
-        renderPhaseOverviewTab();
-        renderComparisonTab();
-        
-        if (currentProject) {
-          const updated = allProjects.find(p => p.id === currentProject.id);
-          if (updated) {
-            currentProject = updated;
-            renderProjectDetail();
-          }
-        }
-      }
+      await silentRefreshData();
     }
   } catch (e) {
     // Quiet offline

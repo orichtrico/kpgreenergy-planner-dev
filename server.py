@@ -88,6 +88,93 @@ async def serve_liff():
 async def serve_liff_html():
     return await serve_liff()
 
+# Background Non-Blocking Auto-Sync Worker
+def _fetch_and_apply_google_sheet():
+    global DATA_VERSION
+    url = getattr(engine, "google_sheet_webapp_url", "") or os.environ.get("GOOGLE_SHEET_URL", "") or os.environ.get("WEBAPP_URL", "")
+    if not url or "script.google.com" not in url:
+        return
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res_text = response.read().decode('utf-8')
+            data = json.loads(res_text)
+            
+        projects_from_sheet = data.get("projects", [])
+        if not projects_from_sheet:
+            return
+            
+        updated = False
+        for idx, p_sheet in enumerate(projects_from_sheet):
+            sheet_order = str(p_sheet.get("order_no", "")).strip()
+            
+            target_p = None
+            if idx < len(engine.projects):
+                target_p = engine.projects[idx]
+            else:
+                for p in engine.projects:
+                    if str(p.get("order_no", "")).strip() == sheet_order:
+                        target_p = p
+                        break
+            
+            if target_p:
+                for m_idx, m_s in enumerate(p_sheet.get("milestones", [])):
+                    act_pct = float(m_s.get("actual_pct", 0.0))
+                    target_m = None
+                    if m_idx < len(target_p.get("milestones", [])):
+                        target_m = target_p["milestones"][m_idx]
+                    else:
+                        m_name = str(m_s.get("name", "")).strip().lower()
+                        for m in target_p.get("milestones", []):
+                            if m["name"].strip().lower() == m_name:
+                                target_m = m
+                                break
+                    
+                    if target_m:
+                        target_m["actual_pct"] = max(0.0, min(1.0, act_pct))
+                        if m_s.get("actual_start"):
+                            target_m["actual_start"] = m_s.get("actual_start")
+                        if m_s.get("actual_finish"):
+                            target_m["actual_finish"] = m_s.get("actual_finish")
+                        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
+                        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
+                
+                total_act = sum(m["actual_contribution"] for m in target_p["milestones"])
+                target_p["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
+                target_p["variance_pct"] = round(target_p["actual_progress_pct"] - target_p["planned_progress_pct"], 2)
+                if target_p["actual_progress_pct"] >= 99.9:
+                    target_p["status"] = "COMPLETED"
+                    target_p["status_th"] = "เสร็จสมบูรณ์"
+                elif target_p["variance_pct"] >= 0:
+                    target_p["status"] = "ON_TRACK"
+                    target_p["status_th"] = "ตามแผนงาน"
+                elif target_p["variance_pct"] >= -10:
+                    target_p["status"] = "SLIGHT_DELAY"
+                    target_p["status_th"] = "ล่าช้าเล็กน้อย"
+                else:
+                    target_p["status"] = "DELAYED"
+                    target_p["status_th"] = "ล่าช้ากว่าแผน"
+                    
+                target_p["s_curve"] = engine.generate_project_scurve(target_p)
+                updated = True
+                
+        if updated:
+            engine.save_to_cache()
+            DATA_VERSION += 1
+            print(f"[Auto-Sync] Synchronized {len(projects_from_sheet)} projects from Google Sheet into cache.")
+    except Exception as e:
+        print(f"[Auto-Sync Notice] {e}")
+
+async def auto_sync_worker():
+    while True:
+        await asyncio.sleep(120) # Auto check every 2 mins quietly in background
+        await asyncio.to_thread(_fetch_and_apply_google_sheet)
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(asyncio.to_thread(_fetch_and_apply_google_sheet))
+    asyncio.create_task(auto_sync_worker())
+
 # API Endpoints (Instant <2ms in-memory cache response)
 @app.get("/api/overview")
 async def get_overview():
