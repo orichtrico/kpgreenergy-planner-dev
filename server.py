@@ -91,7 +91,7 @@ async def serve_liff_html():
 # API Endpoints (Instant <2ms in-memory cache response)
 @app.get("/api/overview")
 async def get_overview():
-    projects = engine.projects
+    projects = [p for p in engine.projects if "CC" not in str(p.get("lot", "")).strip().upper()]
     total_projects = len(projects)
     total_capacity = sum(p.get("capacity_kwp", 0.0) for p in projects)
     
@@ -109,7 +109,7 @@ async def get_overview():
     lots = sorted(list(set(p.get("lot") for p in projects if p.get("lot"))))
     installation_types = sorted(list(set(p.get("installation_type") for p in projects if p.get("installation_type"))))
     
-    phases = engine.get_phase_summary()
+    phases = [ph for ph in engine.get_phase_summary() if "CC" not in str(ph.get("lot", "")).strip().upper()]
 
     return {
         "total_projects": total_projects,
@@ -136,6 +136,10 @@ async def get_projects(
 ):
     results = []
     for p in engine.projects:
+        # Exclude all projects where Lot contains 'CC'
+        if "CC" in str(p.get("lot", "")).strip().upper():
+            continue
+            
         if lot and p.get("lot") != lot:
             continue
         if business_unit and p.get("business_unit") != business_unit:
@@ -181,7 +185,7 @@ async def get_project_detail(project_id: str):
 
 @app.get("/api/phases")
 async def get_phases():
-    return engine.get_phase_summary()
+    return [ph for ph in engine.get_phase_summary() if "CC" not in str(ph.get("lot", "")).strip().upper()]
 
 DATA_VERSION = 1
 
