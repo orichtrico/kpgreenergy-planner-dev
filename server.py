@@ -277,7 +277,7 @@ async def handle_webhook(request: Request):
             pct = pct / 100.0
         
         if not p_id:
-            for p in engine.projects:
+            for p in engine.all_projects:
                 if (p_order and str(p.get("order_no")) == p_order) or \
                    (p_name and (p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name)):
                     p_id = p["id"]
@@ -311,7 +311,7 @@ async def handle_webhook(request: Request):
             val_pct = 0.0
             
         p_id = None
-        for p in engine.projects:
+        for p in engine.all_projects:
             if (p_order and str(p.get("order_no")) == p_order) or \
                (p_name and (p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name)):
                 p_id = p["id"]

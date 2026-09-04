@@ -175,11 +175,21 @@ function switchTab(tabId) {
   
   lucide.createIcons();
   
-  // Trigger chart resizes
-  if (tabId === 'overview' && phaseBarChart) phaseBarChart.render();
-  if (tabId === 'project' && projectScurveChart) projectScurveChart.render();
-  if (tabId === 'comparison') renderComparisonTab();
+  // Trigger chart resizes with slight delay so DOM layout is visible
+  setTimeout(() => {
+    if (tabId === 'overview') {
+      if (phaseBarChart) phaseBarChart.render();
+      if (statusDonutChart) statusDonutChart.render();
+    } else if (tabId === 'project') {
+      if (currentProject) {
+        renderProjectDetail();
+      }
+    } else if (tabId === 'comparison') {
+      renderComparisonTab();
+    }
+  }, 50);
 }
+
 
 // =========================================================================
 // TAB 1: PHASE OVERVIEW
@@ -422,29 +432,35 @@ function renderProjectDetail() {
 }
 
 function renderProjectScurve(scurveData) {
-  if (!scurveData || !scurveData.weeks || scurveData.weeks.length === 0) return;
+  const chartEl = document.getElementById('project-scurve-chart');
+  if (!chartEl) return;
+  
+  if (!scurveData || !scurveData.weeks || scurveData.weeks.length === 0) {
+    chartEl.innerHTML = '<div class="flex items-center justify-center h-full text-slate-400 text-sm font-medium">ไม่มีข้อมูล S-Curve สำหรับโครงการนี้</div>';
+    return;
+  }
   
   const options = {
     series: [
       {
         name: 'Planned Cumulative S-Curve (%)',
         type: 'line',
-        data: scurveData.planned_cum
+        data: scurveData.planned_cum || []
       },
       {
         name: 'Actual Cumulative S-Curve (%)',
         type: 'line',
-        data: scurveData.actual_cum
+        data: scurveData.actual_cum || []
       },
       {
         name: 'Planned Weekly (%)',
         type: 'column',
-        data: scurveData.planned_weekly
+        data: scurveData.planned_weekly || []
       },
       {
         name: 'Actual Weekly (%)',
         type: 'column',
-        data: scurveData.actual_weekly
+        data: scurveData.actual_weekly || []
       }
     ],
     chart: {
@@ -466,7 +482,7 @@ function renderProjectScurve(scurveData) {
     fill: {
       opacity: [1, 1, 0.35, 0.45]
     },
-    labels: scurveData.labels,
+    labels: scurveData.labels || [],
     xaxis: {
       type: 'category',
       labels: {
@@ -520,12 +536,12 @@ function renderProjectScurve(scurveData) {
     }
   };
   
-  const chartEl = document.getElementById('project-scurve-chart');
-  if (chartEl) {
-    if (projectScurveChart) projectScurveChart.destroy();
-    projectScurveChart = new ApexCharts(chartEl, options);
-    projectScurveChart.render();
+  if (projectScurveChart) {
+    try { projectScurveChart.destroy(); } catch (e) {}
   }
+  chartEl.innerHTML = '';
+  projectScurveChart = new ApexCharts(chartEl, options);
+  projectScurveChart.render();
 }
 
 function renderMilestonesTable(milestones) {
@@ -537,9 +553,9 @@ function renderMilestonesTable(milestones) {
     const tr = document.createElement('tr');
     tr.className = 'hover:bg-slate-50 transition';
     
-    const pctVal = Math.round(m.actual_pct * 100);
-    const weightPct = (m.weight * 100).toFixed(1) + '%';
-    const contribPct = (m.actual_contribution * 100).toFixed(2) + '%';
+    const pctVal = Math.round((m.actual_pct || 0) * 100);
+    const weightPct = ((m.weight || 0) * 100).toFixed(1) + '%';
+    const contribPct = ((m.actual_contribution || 0) * 100).toFixed(2) + '%';
     
     let statusBadge = '';
     if (m.status === 'COMPLETED') {
@@ -551,13 +567,15 @@ function renderMilestonesTable(milestones) {
     }
     
     let catBadge = '';
-    if (m.category.includes('Permission')) {
+    const catStr = String(m.category || '');
+    if (catStr.includes('Permission') || catStr.includes('ราชการ')) {
       catBadge = '<span class="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">งานราชการ</span>';
-    } else if (m.category.includes('Engineering')) {
+    } else if (catStr.includes('Engineering') || catStr.includes('ออกแบบ')) {
       catBadge = '<span class="text-[10px] text-cyan-600 bg-cyan-50 px-2 py-0.5 rounded">ออกแบบ</span>';
     } else {
       catBadge = '<span class="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded">ก่อสร้าง</span>';
     }
+
     
     tr.innerHTML = `
       <td class="py-3 px-4 font-medium text-slate-900">${m.name}</td>

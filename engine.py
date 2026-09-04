@@ -37,6 +37,13 @@ def parse_date(d_str):
     return None
 
 class ProjectEngine:
+    @staticmethod
+    def is_cc_project(p: dict) -> bool:
+        lot = str(p.get("lot", "")).strip().upper()
+        name = str(p.get("name", "")).strip().upper()
+        status = str(p.get("status", "")).strip().upper()
+        return lot.startswith("CC") or " CC" in name or name.endswith("CC") or "ยกเลิก" in name or "CANCEL" in status
+
     def __init__(self, excel_path: str = EXCEL_PATH, cache_path: str = CACHE_PATH):
         self.excel_path = excel_path
         self.cache_path = cache_path
@@ -44,6 +51,8 @@ class ProjectEngine:
         self.weight_matrix = {}
         self.milestone_names = []
         self.milestone_categories = {}
+        self.all_projects = []
+        self.active_projects = []
         self.projects = []
         self.projects_dict = {}
         self.google_sheet_webapp_url = ''
@@ -70,9 +79,11 @@ class ProjectEngine:
                         self.milestone_names = data.get('milestone_names', [])
                         self.milestone_categories = data.get('milestone_categories', {})
                         self.google_sheet_webapp_url = data.get('google_sheet_webapp_url') or DEFAULT_WEBAPP_URL
-                        self.projects = projects
-                        self.projects_dict = {p['id']: p for p in self.projects}
-                        print(f"[Fast Engine] Loaded {len(self.projects)} projects successfully from {os.path.basename(path)}.")
+                        self.all_projects = projects
+                        self.projects_dict = {p['id']: p for p in self.all_projects}
+                        self.active_projects = [p for p in self.all_projects if not self.is_cc_project(p)]
+                        self.projects = self.active_projects
+                        print(f"[Fast Engine] Loaded {len(self.all_projects)} total projects ({len(self.active_projects)} active projects) successfully from {os.path.basename(path)}.")
                         return True
                 except Exception as e:
                     print(f"[Engine] Error reading {path}: {e}")
@@ -83,11 +94,13 @@ class ProjectEngine:
         Atomic cache saving to prevent any file corruption
         """
         try:
+            self.active_projects = [p for p in self.all_projects if not self.is_cc_project(p)]
+            self.projects = self.active_projects
             data = {
                 'weight_matrix': self.weight_matrix,
                 'milestone_names': self.milestone_names,
                 'milestone_categories': self.milestone_categories,
-                'projects': self.projects,
+                'projects': self.all_projects,
                 'google_sheet_webapp_url': self.google_sheet_webapp_url
             }
             tmp_path = self.cache_path + '.tmp'
@@ -631,7 +644,7 @@ class ProjectEngine:
             
             p_order = row[1].strip() if len(row) > 1 else ''
             target_prj = None
-            for p in self.projects:
+            for p in self.all_projects:
                 if p['name'].strip().lower() == p_name.lower() or (p_order and str(p.get('order_no')) == p_order):
                     target_prj = p
                     break
