@@ -10,6 +10,6 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: WEBAPP_URL
-        value: https://script.google.com/macros/s/AKfycbyd6yl-DlKbY6xuXMUBWpBcUychl_5Av7AhDItbeodfISgPqCZHFOwWbZDFXOYm2MSO/exec
+        value: https://script.google.com/macros/s/AKfycbyWKqzx6QvDkl7etKG2v0UEDI7u_Gedgnj-NoEYXy_IrFgKf3tiThOvlWWNCTcyb5qM-w/exec
       - key: GOOGLE_SHEET_URL
-        value: https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?usp=sharing
+        value: https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?gid=669434805#gid=669434805

@@ -36,8 +36,8 @@ app.add_middleware(
 )
 
 # Hardcoded Google Apps Script & Sheet 2-Way Sync URLs
-DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyd6yl-DlKbY6xuXMUBWpBcUychl_5Av7AhDItbeodfISgPqCZHFOwWbZDFXOYm2MSO/exec"
-DEFAULT_GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?usp=sharing"
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyWKqzx6QvDkl7etKG2v0UEDI7u_Gedgnj-NoEYXy_IrFgKf3tiThOvlWWNCTcyb5qM-w/exec"
+DEFAULT_GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?gid=669434805#gid=669434805"
 
 # Initialize Engine
 engine = ProjectEngine()
