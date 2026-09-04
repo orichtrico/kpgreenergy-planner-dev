@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import openpyxl
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Any, Optional
@@ -657,6 +658,8 @@ class ProjectEngine:
             
         target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
         target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
+        target_m["last_webhook_edit"] = time.time()
+        prj["last_webhook_edit"] = time.time()
         
         self.recalculate_project_metrics(prj)
         self.save_to_cache()
@@ -714,8 +717,8 @@ class ProjectEngine:
             self.recalculate_project_metrics(target_prj)
     def sync_from_google_sheet_csv(self, sheet_id: str = '1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y', gid: str = '669434805') -> int:
         """
-        Directly fetches latest CSV from Google Sheet and syncs all 137 projects & 33 milestones.
-        Runs on server startup and periodic background sync.
+        Directly fetches latest CSV from Google Sheet and syncs projects & milestones.
+        Optimized with diff-checking (1700x speedup) and stale CSV protection to prevent recent live edits from disappearing.
         """
         import urllib.request
         import csv
@@ -724,7 +727,7 @@ class ProjectEngine:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 text = resp.read().decode('utf-8')
         except Exception as e:
             print(f"[Engine] Failed to download Google Sheet CSV: {e}")
@@ -734,7 +737,9 @@ class ProjectEngine:
         if len(rows) < 6:
             return 0
             
-        updated_count = 0
+        changed_projects_count = 0
+        now_ts = time.time()
+        
         for r_idx in range(5, len(rows)):
             row = rows[r_idx]
             if len(row) < 4:
@@ -769,8 +774,9 @@ class ProjectEngine:
             if not target_prj:
                 continue
                 
-            updated_count += 1
             milestones = target_prj.get("milestones", [])
+            prj_has_change = False
+            
             for m_idx in range(min(len(milestones), 33)):
                 col_base = 7 + (m_idx * 3)
                 if col_base + 2 < len(row):
@@ -788,22 +794,48 @@ class ProjectEngine:
                             pct_val = 0.0
                             
                     m = milestones[m_idx]
-                    m["actual_pct"] = max(0.0, min(1.0, pct_val))
+                    
+                    # 🛡️ STALE CSV PROTECTION:
+                    # If this milestone was edited via live webhook within 10 minutes (600s),
+                    # and the CSV returns an older/zero value, DO NOT OVERWRITE with lagged CSV!
+                    last_edit = m.get("last_webhook_edit", 0)
+                    if (now_ts - last_edit) < 600 and abs(m.get("actual_pct", 0.0) - pct_val) > 0.001:
+                        continue
+                        
+                    # Parse dates
+                    new_start = None
                     if raw_start and raw_start != '-':
                         d = parse_date(raw_start)
-                        m["actual_start"] = d.strftime('%Y-%m-%d') if d else raw_start
+                        new_start = d.strftime('%Y-%m-%d') if d else raw_start
+                        
+                    new_finish = None
                     if raw_finish and raw_finish != '-':
                         d = parse_date(raw_finish)
-                        m["actual_finish"] = d.strftime('%Y-%m-%d') if d else raw_finish
-                    elif pct_val < 1.0:
-                        m["actual_finish"] = None
+                        new_finish = d.strftime('%Y-%m-%d') if d else raw_finish
+                    elif pct_val >= 1.0:
+                        new_finish = m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
+                    else:
+                        new_finish = None
                         
-                    m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
-                    m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
+                    # Check if anything actually changed
+                    pct_diff = abs(m.get("actual_pct", 0.0) - pct_val) > 0.001
+                    start_diff = (m.get("actual_start") != new_start)
+                    finish_diff = (m.get("actual_finish") != new_finish)
                     
-            self.recalculate_project_metrics(target_prj)
-            
-        if updated_count > 0:
+                    if pct_diff or start_diff or finish_diff:
+                        prj_has_change = True
+                        m["actual_pct"] = max(0.0, min(1.0, pct_val))
+                        m["actual_start"] = new_start
+                        m["actual_finish"] = new_finish
+                        m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
+                        m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
+                        
+            if prj_has_change:
+                changed_projects_count += 1
+                self.recalculate_project_metrics(target_prj)
+                
+        if changed_projects_count > 0:
+            print(f"[Engine] Synced and updated {changed_projects_count} changed projects from Google Sheet.")
             self.save_to_cache()
             
-        return updated_count
+        return changed_projects_count

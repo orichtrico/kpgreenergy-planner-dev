@@ -76,11 +76,20 @@ def do_sheet_sync() -> int:
 def trigger_background_sheet_sync():
     threading.Thread(target=do_sheet_sync, daemon=True).start()
 
+def background_periodic_sync():
+    while True:
+        time.sleep(600)  # Sync every 10 minutes
+        try:
+            do_sheet_sync()
+        except:
+            pass
+
 @app.on_event("startup")
 async def on_startup():
     # Sync latest Google Sheet on server startup
     print("[Startup] Triggering initial Google Sheet sync in background...")
     trigger_background_sheet_sync()
+    threading.Thread(target=background_periodic_sync, daemon=True).start()
 
 @app.get("/api/live-status")
 async def get_live_status():
@@ -145,10 +154,6 @@ async def serve_liff_html():
 # API Endpoints
 @app.get("/api/overview")
 async def get_overview():
-    # Automatically sync with Google Sheet in background if stale (> 60s) or on initial page open
-    if time.time() - LAST_SHEET_SYNC_TIME > 60:
-        trigger_background_sheet_sync()
-        
     projects = engine.projects
     total_projects = len(projects)
     total_capacity = sum(p.get("capacity_kwp", 0.0) for p in projects)

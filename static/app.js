@@ -1414,8 +1414,8 @@ async function refreshDataSilently() {
   }
 }
 
-// Start auto polling: every 3.5 seconds + on window focus + on visibility change
-setInterval(checkLiveStatus, 3500);
+// Start auto polling: every 7 seconds + instant on window focus / visibility change
+setInterval(checkLiveStatus, 7000);
 window.addEventListener('focus', checkLiveStatus);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
