@@ -81,6 +81,15 @@ async function loadInitialData() {
       await selectProject(allProjects[0].id);
     }
     
+    // Fetch initial data version
+    try {
+      const liveRes = await fetch('/api/live-status?t=' + Date.now(), { cache: 'no-store' });
+      if (liveRes.ok) {
+        const liveData = await liveRes.json();
+        currentDataVersion = liveData.version;
+      }
+    } catch(e) {}
+    
   } catch (err) {
     console.error("Error loading data:", err);
     showToast("เกิดข้อผิดพลาดในการโหลดข้อมูล", "error");
@@ -1334,3 +1343,78 @@ async function saveWebAppUrl() {
     showToast('บันทึกบนเซิร์ฟเวอร์สำเร็จ (Local)');
   }
 }
+
+// =========================================================================
+// ⚡ Real-Time Auto-Sync Polling (Google Sheet ➔ Web Dashboard)
+// =========================================================================
+let currentDataVersion = null;
+let isPollingSync = false;
+
+async function checkLiveStatus() {
+  if (isPollingSync) return;
+  
+  // Don't interrupt user if they have the edit milestone modal open
+  const editModal = document.getElementById('edit-milestone-modal');
+  if (editModal && !editModal.classList.contains('hidden')) {
+    return;
+  }
+
+  try {
+    isPollingSync = true;
+    const res = await fetch('/api/live-status?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    
+    if (data && data.version !== undefined) {
+      if (currentDataVersion === null) {
+        currentDataVersion = data.version;
+      } else if (data.version > currentDataVersion) {
+        console.log(`[RealTimeSync] New version detected: ${currentDataVersion} -> ${data.version}`);
+        currentDataVersion = data.version;
+        await refreshDataSilently();
+        showToast('⚡ ได้รับข้อมูลอัปเดตล่าสุดจาก Google Sheet เรียบร้อยแล้ว!', 'success');
+      }
+    }
+  } catch (err) {
+    // Silent fail on momentary network interruption
+  } finally {
+    isPollingSync = false;
+  }
+}
+
+async function refreshDataSilently() {
+  try {
+    const [overviewRes, projectsRes] = await Promise.all([
+      fetch('/api/overview?t=' + Date.now(), { cache: 'no-store' }),
+      fetch('/api/projects?t=' + Date.now(), { cache: 'no-store' })
+    ]);
+    
+    globalOverview = await overviewRes.json();
+    const pData = await projectsRes.json();
+    allProjects = pData.projects || [];
+    
+    renderKPIs();
+    renderPhaseOverviewTab();
+    renderComparisonTab();
+    
+    // Silently re-render currently selected project
+    if (currentProject) {
+      const activePrjId = currentProject.id;
+      const updatedPrj = allProjects.find(p => p.id === activePrjId);
+      if (updatedPrj) {
+        await selectProject(updatedPrj.id);
+      }
+    }
+  } catch (e) {
+    console.error('[RealTimeSync] Silent refresh error:', e);
+  }
+}
+
+// Start auto polling: every 3.5 seconds + on window focus + on visibility change
+setInterval(checkLiveStatus, 3500);
+window.addEventListener('focus', checkLiveStatus);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    checkLiveStatus();
+  }
+});

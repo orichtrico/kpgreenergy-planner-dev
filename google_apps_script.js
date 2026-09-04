@@ -1,16 +1,30 @@
 /**
  * =========================================================================
- * ⚡ KPGreenergy Planner - 2-Way Sync Engine (Master & Progress Edition)
+ * ⚡ KPGreenergy Planner - 2-Way Real-Time Sync Engine (Google Sheet & Web)
  * =========================================================================
+ * 
+ * 📌 คำแนะนำในการเปิดใช้งานให้แก้ข้อมูลใน Google Sheet แล้วหน้าเว็บเปลี่ยนทันที:
+ * 
+ * 1. วางโค้ดทั้งหมดนี้ลงใน Google Apps Script (ส่วนขยาย > Apps Script) แล้วกด Save (บันทึก)
+ * 2. เลือกฟังก์ชัน "testWebhook" แล้วกดปุ่ม "Run" (เรียกใช้) 1 ครั้ง
+ *    - ระบบจะขึ้นหน้าต่างให้สิทธิ์ (Authorization Required) ให้กด "ตรวจสอบสิทธิ์" > เลือกอีเมลของคุณ > "ขั้นสูง" (Advanced) > "ไปยัง... (ไม่ปลอดภัย)" > กด "อนุญาต" (Allow)
+ * 3. ตั้งค่าทริกเกอร์อัตโนมัติ (สำคัญมาก!):
+ *    - คลิกเมนู "ทริกเกอร์" (รูปนาฬิกา ⏰ เมนูด้านซ้าย)
+ *    - กดปุ่ม "+ เพิ่มทริกเกอร์" (+ Add Trigger) ที่มุมขวาล่าง
+ *    - เลือกฟังก์ชันที่จะเรียกใช้: installedOnEdit
+ *    - เลือกแหล่งที่มาของเหตุการณ์: จากสเปรดชีต (From spreadsheet)
+ *    - เลือกประเภทเหตุการณ์: เมื่อแก้ไข (On edit)
+ *    - การแจ้งเตือนความล้มเหลว: แจ้งเตือนฉันทันที
+ *    - กด "บันทึก" (Save)
+ * 
+ * 4. นำไปใช้งานได้ทันที! เมื่อมีการพิมพ์แก้ไข % หรือวันที่ในชีต Progress หน้าเว็บ Render จะอัปเดตแบบ Real-time ทันทีครับ
  */
 
-// URL ของ Web Dashboard บน Render (kpgreenergy-planner-dev)
+// 🌐 URL ของ Web Dashboard บน Render
 const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner-dev.onrender.com/api/webhook';
 
 /**
- * 1. onEdit Trigger: เมื่อคุณพิมพ์แก้ % ใน Google Sheet ระบบจะส่งข้อมูลไปอัปเดตหน้าเว็บทันที!
- * แนะนำให้สร้าง Installable Trigger:
- * เมนู ทริกเกอร์ (รูปนาฬิกา) > เพิ่มทริกเกอร์ > เลือก 'installedOnEdit' > จากสเปรดชีต > เมื่อแก้ไข (On edit)
+ * 1. Installable Trigger: ทำงานทุกครั้งที่มีการพิมพ์/แก้ไขในเซลล์ของ Google Sheet
  */
 function installedOnEdit(e) {
   try {
@@ -18,35 +32,54 @@ function installedOnEdit(e) {
     const sheet = e.range.getSheet();
     const sheetName = sheet.getName();
     
-    // ตรวจสอบชีต Progress หรือ data Progress
+    // ตรวจสอบเฉพาะชีต Progress หรือ data Progress
     if (sheetName === 'Progress' || sheetName === 'data Progress') {
       const row = e.range.getRow();
       const col = e.range.getColumn();
-      const value = e.value !== undefined ? e.value : e.range.getValue();
 
-      // ข้อมูลโครงการในชีต Progress เริ่มแถว 6, คอลัมน์ Milestone เริ่มที่ H (8)
+      // ข้อมูลโครงการเริ่มแถว 6 เป็นต้นไป, คอลัมน์ Milestone เริ่มที่คอลัมน์ H (8) ถึง CR
       if (row >= 6 && col >= 8) {
-        const orderNo = sheet.getRange(row, 3).getValue(); // Col C = ลำดับ
-        const prjName = sheet.getRange(row, 4).getValue(); // Col D = ชื่อโครงการ
+        const orderNo = sheet.getRange(row, 3).getValue(); // Col C = ลำดับ (Order No)
+        const prjName = sheet.getRange(row, 4).getValue(); // Col D = ชื่อโครงการ (Project Name)
         
+        // คำนวณลำดับ Milestone Index (0 ถึง 32)
         const mIdx = Math.floor((col - 8) / 3);
         const headerCol = (mIdx * 3) + 8;
         const milestoneName = sheet.getRange(3, headerCol).getValue(); // แถว 3 = ชื่อ Milestone
 
-        // ตรวจสอบว่าแก้ไขในช่อง % Progress (Col J, M, P...)
-        const isPctCol = ((col - 8) % 3 === 2);
+        // ดึงข้อมูลทั้ง 3 ช่องของ Milestone นี้ (Actual Start, Actual Finish, Actual %)
+        const rawStart = sheet.getRange(row, headerCol).getValue();
+        const rawFinish = sheet.getRange(row, headerCol + 1).getValue();
+        const rawPct = sheet.getRange(row, headerCol + 2).getValue();
         
-        if (prjName && milestoneName && isPctCol) {
+        const actualStart = formatSheetDate(rawStart);
+        const actualFinish = formatSheetDate(rawFinish);
+        
+        let actualPct = 0;
+        if (typeof rawPct === 'number') {
+          actualPct = rawPct > 1.0 ? rawPct / 100.0 : rawPct;
+        } else if (rawPct) {
+          const cleanStr = String(rawPct).replace('%', '').trim();
+          const p = parseFloat(cleanStr);
+          if (!isNaN(p)) {
+            actualPct = p > 1.0 ? p / 100.0 : p;
+          }
+        }
+        
+        // ส่ง Webhook ไปอัปเดต Render ทันที
+        if (prjName) {
           notifyWebDashboard({
             action: 'sheet_edited',
             sheet: sheetName,
             row: row,
             order_no: String(orderNo || ''),
             project_name: String(prjName),
-            milestone_name: String(milestoneName),
+            milestone_name: String(milestoneName || ''),
             milestone_index: mIdx,
-            new_value: value,
-            actual_pct: value
+            actual_start: actualStart,
+            actual_finish: actualFinish,
+            new_value: actualPct,
+            actual_pct: actualPct
           });
         }
       }
@@ -57,15 +90,28 @@ function installedOnEdit(e) {
 }
 
 /**
- * Simple onEdit fallback
+ * ฟังก์ชันช่วยแปลงวันที่จาก Google Sheet ให้อยู่ในรูปแบบ YYYY-MM-DD
  */
-function onEdit(e) {
-  // Simple onEdit triggers without OAuth permission to UrlFetchApp
-  // For external webhook, please use installedOnEdit via Triggers menu
+function formatSheetDate(val) {
+  if (!val) return '';
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, 'Asia/Bangkok', 'yyyy-MM-dd');
+  }
+  const str = String(val).trim();
+  if (str === '-' || str === '') return '';
+  return str;
 }
 
 /**
- * 2. GET Request: รองรับทั้งดึงข้อมูลด่วน และรับคำสั่งบันทึกความเร็วสูง (30ms)
+ * Simple onEdit fallback (แจ้งเตือนความปลอดภัย)
+ */
+function onEdit(e) {
+  // Simple trigger ไม่สามารถยิง UrlFetchApp ออกภายนอกได้เนื่องจากระบบความปลอดภัยของ Google
+  // ระบบจะใช้ installedOnEdit ที่ตั้งในเมนูทริกเกอร์แทนครับ
+}
+
+/**
+ * 2. GET Request: รองรับทั้งดึงข้อมูลด่วน และรับคำสั่งบันทึกความเร็วสูง (30ms) จากหน้าเว็บ
  */
 function doGet(e) {
   try {
@@ -105,7 +151,7 @@ function doPost(e) {
 }
 
 /**
- * ฟังก์ชันบันทึกข้อมูลลงเซลล์ (Ultra-Fast 30ms Execution)
+ * บันทึกข้อมูลลงเซลล์ใน Google Sheet (Ultra-Fast 30ms Execution)
  */
 function handleUpdateMilestone(data) {
   try {
@@ -158,7 +204,6 @@ function handleUpdateMilestone(data) {
     if (milestoneIdx >= 0 && milestoneIdx < 33) {
       targetCol = 8 + (milestoneIdx * 3);
     } else if (milestoneName) {
-      // Find column from Row 3
       const headerRow3 = progSheet.getRange(3, 8, 1, 99).getValues()[0];
       for (let c = 0; c < headerRow3.length; c += 3) {
         const title = String(headerRow3[c] || '').trim().toLowerCase();
@@ -178,7 +223,7 @@ function handleUpdateMilestone(data) {
     if (actualFinish) progSheet.getRange(targetRow, targetCol + 1).setValue(actualFinish);
     progSheet.getRange(targetRow, targetCol + 2).setValue(actualPct);
 
-    // Optional Logging
+    // บันทึก Log ลงชีต Log_Updates (ถ้ามีชีตนี้)
     const logSheet = ss.getSheetByName('Log_Updates');
     if (logSheet) {
       const nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
@@ -195,15 +240,19 @@ function handleUpdateMilestone(data) {
   }
 }
 
+/**
+ * ฟังก์ชันยิง Webhook ไปยังหน้าเว็บ Render
+ */
 function notifyWebDashboard(payload) {
   if (!WEBHOOK_DASHBOARD_URL || WEBHOOK_DASHBOARD_URL.includes('your-dashboard')) return;
   try {
-    UrlFetchApp.fetch(WEBHOOK_DASHBOARD_URL, {
+    const res = UrlFetchApp.fetch(WEBHOOK_DASHBOARD_URL, {
       method: 'post',
       contentType: 'application/json',
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
     });
+    console.log('Webhook sent to dashboard: ' + res.getResponseCode());
   } catch (e) {
     console.warn('Webhook notify error: ' + e);
   }
@@ -214,17 +263,21 @@ function createJsonResponse(data) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+/**
+ * ฟังก์ชันทดสอบการเชื่อมต่อ Webhook ไปยัง Render
+ * ใช้กด Run เพื่อให้ระบบขึ้นขออนุญาตสิทธิ์ (OAuth Authorization)
+ */
 function testWebhook() {
   const payload = {
     action: 'sheet_edited',
-    project_name: 'อสร.หนองจอก',
+    project_name: 'CEE-2',
     order_no: '',
     milestone_name: 'CPF ส่งมอบพื้นที่และยินยอมการใช้ที่ดิน ATV',
     milestone_index: 0,
     new_value: 1.0,
     actual_pct: 1.0
   };
-  Logger.log('Sending test payload to Web Dashboard: ' + JSON.stringify(payload));
+  Logger.log('🚀 กำลังทดสอบส่งข้อมูลไปยัง Render Webhook...');
   notifyWebDashboard(payload);
-  Logger.log('Test webhook completed.');
+  Logger.log('✅ ทดสอบส่ง Webhook เสร็จสิ้น! ตรวจสอบที่หน้าเว็บ Render ได้เลย');
 }

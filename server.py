@@ -42,6 +42,20 @@ async def add_no_cache_header(request: Request, call_next):
 # Initialize Engine
 engine = ProjectEngine()
 
+# Data Version for Real-Time Auto Sync across open tabs
+DATA_VERSION = 1
+LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def notify_data_updated():
+    global DATA_VERSION, LAST_UPDATE_TIME
+    DATA_VERSION += 1
+    LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+@app.get("/api/live-status")
+async def get_live_status():
+    global DATA_VERSION, LAST_UPDATE_TIME
+    return {"version": DATA_VERSION, "last_update": LAST_UPDATE_TIME}
+
 # Ensure static directory exists
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -279,40 +293,62 @@ async def handle_webhook(request: Request):
     if action in ["update_milestone", "save_progress"]:
         p_id = body.get("project_id")
         p_order = str(body.get("order_no") or "").strip()
-        p_name = body.get("project_name", "").strip().lower()
-        m_name = body.get("milestone_name", "").strip()
+        p_name = str(body.get("project_name", "")).strip().lower()
+        m_name = str(body.get("milestone_name", "")).strip()
         m_idx = body.get("milestone_index")
         pct = float(body.get("actual_pct", 0.0))
         if pct > 1.0:
             pct = pct / 100.0
         
         if not p_id:
-            for p in engine.all_projects:
-                if (p_order and str(p.get("order_no")) == p_order) or \
-                   (p_name and (p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name)):
-                    p_id = p["id"]
-                    break
+            # 1. Exact order_no
+            if p_order:
+                for p in engine.all_projects:
+                    if str(p.get("order_no", "")).strip() == p_order:
+                        p_id = p["id"]
+                        break
+            # 2. Exact project name
+            if not p_id and p_name:
+                for p in engine.all_projects:
+                    if p["name"].strip().lower() == p_name:
+                        p_id = p["id"]
+                        break
+            # 3. Substring project name
+            if not p_id and p_name:
+                for p in engine.all_projects:
+                    pn = p["name"].strip().lower()
+                    if p_name in pn or pn in p_name:
+                        p_id = p["id"]
+                        break
         
         if p_id:
-            # If m_name is missing but m_idx is present
-            if not m_name and m_idx is not None and 0 <= int(m_idx) < len(engine.projects_dict[p_id]["milestones"]):
-                m_name = engine.projects_dict[p_id]["milestones"][int(m_idx)]["name"]
-                
             eng_res = engine.update_milestone(
                 project_id=p_id,
                 milestone_name=m_name,
                 actual_pct=pct,
                 actual_start=body.get("actual_start"),
-                actual_finish=body.get("actual_finish")
+                actual_finish=body.get("actual_finish"),
+                milestone_index=m_idx
             )
-            return {"status": "ok", "updated": eng_res, "project_id": p_id, "milestone": m_name, "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"]}
+            if eng_res:
+                notify_data_updated()
+            return {
+                "status": "ok",
+                "updated": eng_res,
+                "project_id": p_id,
+                "project_name": engine.projects_dict[p_id]["name"],
+                "milestone": m_name,
+                "milestone_index": m_idx,
+                "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"],
+                "version": DATA_VERSION
+            }
 
     if action in ["sheet_edited", "on_edit"]:
         p_order = str(body.get("order_no") or "").strip()
         p_name = str(body.get("project_name", "")).strip().lower()
         m_name = str(body.get("milestone_name", "")).strip()
         m_idx = body.get("milestone_index")
-        val_str = str(body.get("new_value", "0")).replace("%", "").strip()
+        val_str = str(body.get("new_value", body.get("actual_pct", "0"))).replace("%", "").strip()
         try:
             val_pct = float(val_str)
             if val_pct > 1.0:
@@ -321,23 +357,48 @@ async def handle_webhook(request: Request):
             val_pct = 0.0
             
         p_id = None
-        for p in engine.all_projects:
-            if (p_order and str(p.get("order_no")) == p_order) or \
-               (p_name and (p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name)):
-                p_id = p["id"]
-                break
+        # 1. Exact order_no
+        if p_order:
+            for p in engine.all_projects:
+                if str(p.get("order_no", "")).strip() == p_order:
+                    p_id = p["id"]
+                    break
+        # 2. Exact project name
+        if not p_id and p_name:
+            for p in engine.all_projects:
+                if p["name"].strip().lower() == p_name:
+                    p_id = p["id"]
+                    break
+        # 3. Substring project name
+        if not p_id and p_name:
+            for p in engine.all_projects:
+                pn = p["name"].strip().lower()
+                if p_name in pn or pn in p_name:
+                    p_id = p["id"]
+                    break
                 
         if p_id:
-            if not m_name and m_idx is not None and 0 <= int(m_idx) < len(engine.projects_dict[p_id]["milestones"]):
-                m_name = engine.projects_dict[p_id]["milestones"][int(m_idx)]["name"]
-                
-            if m_name:
-                eng_res = engine.update_milestone(
-                    project_id=p_id,
-                    milestone_name=m_name,
-                    actual_pct=val_pct
-                )
-                return {"status": "ok", "updated": eng_res, "project_id": p_id, "milestone": m_name, "new_pct": val_pct, "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"]}
+            eng_res = engine.update_milestone(
+                project_id=p_id,
+                milestone_name=m_name,
+                actual_pct=val_pct,
+                actual_start=body.get("actual_start"),
+                actual_finish=body.get("actual_finish"),
+                milestone_index=m_idx
+            )
+            if eng_res:
+                notify_data_updated()
+            return {
+                "status": "ok",
+                "updated": eng_res,
+                "project_id": p_id,
+                "project_name": engine.projects_dict[p_id]["name"],
+                "milestone": m_name,
+                "milestone_index": m_idx,
+                "new_pct": val_pct,
+                "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"],
+                "version": DATA_VERSION
+            }
             
     return {"status": "received", "body": body}
 

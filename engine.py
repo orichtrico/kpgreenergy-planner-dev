@@ -606,32 +606,61 @@ class ProjectEngine:
             
         prj["s_curve"] = self.generate_project_scurve(prj)
 
-    def update_milestone(self, project_id: str, milestone_name: str, actual_pct: float, 
-                         actual_start: Optional[str] = None, actual_finish: Optional[str] = None) -> bool:
+    def update_milestone(self, project_id: str, milestone_name: str = "", actual_pct: float = 0.0, 
+                         actual_start: Optional[str] = None, actual_finish: Optional[str] = None,
+                         milestone_index: Optional[int] = None) -> bool:
         if project_id not in self.projects_dict:
             return False
             
         prj = self.projects_dict[project_id]
-        updated = False
-        for m in prj.get("milestones", []):
-            if m["name"].strip().lower() == milestone_name.strip().lower():
-                m["actual_pct"] = max(0.0, min(1.0, actual_pct))
-                if actual_start:
-                    m["actual_start"] = actual_start
-                if m["actual_pct"] >= 1.0:
-                    m["actual_finish"] = actual_finish or m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
-                else:
-                    m["actual_finish"] = None
-                m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
-                m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
-                updated = True
-                break
+        milestones = prj.get("milestones", [])
+        target_m = None
+        
+        # 1. Match by milestone_index if provided
+        if milestone_index is not None:
+            try:
+                idx = int(milestone_index)
+                if 0 <= idx < len(milestones):
+                    target_m = milestones[idx]
+            except:
+                pass
                 
-        if updated:
-            self.recalculate_project_metrics(prj)
-            self.save_to_cache()
+        # 2. Match by exact name
+        if not target_m and milestone_name:
+            clean_name = milestone_name.strip().lower()
+            for m in milestones:
+                if m["name"].strip().lower() == clean_name:
+                    target_m = m
+                    break
+                    
+        # 3. Match by normalized / whitespace-stripped name
+        if not target_m and milestone_name:
+            clean_nospace = "".join(milestone_name.lower().split())
+            for m in milestones:
+                m_clean = "".join(m["name"].lower().split())
+                if m_clean == clean_nospace or m_clean in clean_nospace or clean_nospace in m_clean:
+                    target_m = m
+                    break
+                    
+        if not target_m:
+            return False
             
-        return updated
+        target_m["actual_pct"] = max(0.0, min(1.0, actual_pct))
+        if actual_start:
+            target_m["actual_start"] = actual_start
+        if target_m["actual_pct"] >= 1.0:
+            target_m["actual_finish"] = actual_finish or target_m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
+        elif actual_finish:
+            target_m["actual_finish"] = actual_finish
+        else:
+            target_m["actual_finish"] = None
+            
+        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
+        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
+        
+        self.recalculate_project_metrics(prj)
+        self.save_to_cache()
+        return True
 
     def batch_sync_from_sheet_data(self, sheet_rows: list, m_names: list) -> int:
         updated_projects = 0
