@@ -29,6 +29,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Force No-Cache for all responses to prevent stale browser cache
+@app.middleware("http")
+async def add_no_cache_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 # Initialize Engine
 engine = ProjectEngine()
 
