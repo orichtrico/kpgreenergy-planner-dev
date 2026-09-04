@@ -712,7 +712,98 @@ class ProjectEngine:
                 m_idx += 1
                 
             self.recalculate_project_metrics(target_prj)
-            updated_projects += 1
+    def sync_from_google_sheet_csv(self, sheet_id: str = '1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y', gid: str = '669434805') -> int:
+        """
+        Directly fetches latest CSV from Google Sheet and syncs all 137 projects & 33 milestones.
+        Runs on server startup and periodic background sync.
+        """
+        import urllib.request
+        import csv
+        import io
+        
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                text = resp.read().decode('utf-8')
+        except Exception as e:
+            print(f"[Engine] Failed to download Google Sheet CSV: {e}")
+            return 0
             
-        self.save_to_cache()
-        return updated_projects
+        rows = list(csv.reader(io.StringIO(text)))
+        if len(rows) < 6:
+            return 0
+            
+        updated_count = 0
+        for r_idx in range(5, len(rows)):
+            row = rows[r_idx]
+            if len(row) < 4:
+                continue
+            order_str = row[2].strip() if len(row) > 2 else ''
+            name_str = row[3].strip() if len(row) > 3 else ''
+            if not name_str:
+                continue
+                
+            target_prj = None
+            # 1. Match by order_no if available
+            if order_str:
+                for p in self.all_projects:
+                    if str(p.get("order_no", "")).strip() == order_str:
+                        target_prj = p
+                        break
+            # 2. Match by exact name
+            if not target_prj and name_str:
+                clean_n = name_str.lower().strip()
+                for p in self.all_projects:
+                    if p["name"].strip().lower() == clean_n:
+                        target_prj = p
+                        break
+            # 3. Match by normalized name
+            if not target_prj and name_str:
+                clean_n = "".join(name_str.lower().split())
+                for p in self.all_projects:
+                    if "".join(p["name"].lower().split()) == clean_n:
+                        target_prj = p
+                        break
+                        
+            if not target_prj:
+                continue
+                
+            updated_count += 1
+            milestones = target_prj.get("milestones", [])
+            for m_idx in range(min(len(milestones), 33)):
+                col_base = 7 + (m_idx * 3)
+                if col_base + 2 < len(row):
+                    raw_start = row[col_base].strip()
+                    raw_finish = row[col_base + 1].strip()
+                    raw_pct = row[col_base + 2].strip()
+                    
+                    pct_val = 0.0
+                    if raw_pct:
+                        try:
+                            clean_pct = raw_pct.replace('%', '').replace(',', '').strip()
+                            p_float = float(clean_pct)
+                            pct_val = p_float / 100.0 if p_float > 1.0 else p_float
+                        except:
+                            pct_val = 0.0
+                            
+                    m = milestones[m_idx]
+                    m["actual_pct"] = max(0.0, min(1.0, pct_val))
+                    if raw_start and raw_start != '-':
+                        d = parse_date(raw_start)
+                        m["actual_start"] = d.strftime('%Y-%m-%d') if d else raw_start
+                    if raw_finish and raw_finish != '-':
+                        d = parse_date(raw_finish)
+                        m["actual_finish"] = d.strftime('%Y-%m-%d') if d else raw_finish
+                    elif pct_val < 1.0:
+                        m["actual_finish"] = None
+                        
+                    m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
+                    m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
+                    
+            self.recalculate_project_metrics(target_prj)
+            
+        if updated_count > 0:
+            self.save_to_cache()
+            
+        return updated_count

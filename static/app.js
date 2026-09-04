@@ -46,6 +46,10 @@ async function refreshData() {
   const icon = document.getElementById('refresh-icon');
   if (icon) icon.classList.add('animate-spin');
   
+  try {
+    await fetch('/api/sync-latest?t=' + Date.now(), { cache: 'no-store' });
+  } catch(e) {}
+  
   await loadInitialData();
   if (currentProject) {
     await selectProject(currentProject.id);
@@ -53,7 +57,7 @@ async function refreshData() {
   
   setTimeout(() => {
     if (icon) icon.classList.remove('animate-spin');
-    showToast('อัปเดตข้อมูลล่าสุดเรียบร้อยแล้ว');
+    showToast('ซิงค์และอัปเดตข้อมูลล่าสุดจาก Google Sheet เรียบร้อยแล้ว');
   }, 400);
 }
 

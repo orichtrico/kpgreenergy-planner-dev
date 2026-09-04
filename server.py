@@ -3,6 +3,8 @@ import json
 import re
 import csv
 import io
+import time
+import threading
 import requests
 from datetime import datetime, date
 from typing import Optional, List
@@ -45,16 +47,56 @@ engine = ProjectEngine()
 # Data Version for Real-Time Auto Sync across open tabs
 DATA_VERSION = 1
 LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+LAST_SHEET_SYNC_TIME = 0
+IS_SYNCING_SHEET = False
 
 def notify_data_updated():
     global DATA_VERSION, LAST_UPDATE_TIME
     DATA_VERSION += 1
     LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+def do_sheet_sync() -> int:
+    global LAST_SHEET_SYNC_TIME, IS_SYNCING_SHEET
+    if IS_SYNCING_SHEET:
+        return 0
+    try:
+        IS_SYNCING_SHEET = True
+        count = engine.sync_from_google_sheet_csv()
+        if count > 0:
+            notify_data_updated()
+            print(f"[SheetSync] Successfully synced {count} projects from Google Sheet (v{DATA_VERSION}).")
+        LAST_SHEET_SYNC_TIME = time.time()
+        return count
+    except Exception as e:
+        print(f"[SheetSync] Error syncing from Google Sheet: {e}")
+        return 0
+    finally:
+        IS_SYNCING_SHEET = False
+
+def trigger_background_sheet_sync():
+    threading.Thread(target=do_sheet_sync, daemon=True).start()
+
+@app.on_event("startup")
+async def on_startup():
+    # Sync latest Google Sheet on server startup
+    print("[Startup] Triggering initial Google Sheet sync in background...")
+    trigger_background_sheet_sync()
+
 @app.get("/api/live-status")
 async def get_live_status():
     global DATA_VERSION, LAST_UPDATE_TIME
     return {"version": DATA_VERSION, "last_update": LAST_UPDATE_TIME}
+
+@app.get("/api/sync-latest")
+@app.post("/api/sync-latest")
+async def sync_latest_endpoint():
+    count = do_sheet_sync()
+    return {
+        "success": True, 
+        "updated_projects": count, 
+        "version": DATA_VERSION,
+        "message": f"ซิงค์ข้อมูลล่าสุดจาก Google Sheet สำเร็จเรียบร้อยแล้ว ({count} โครงการ)"
+    }
 
 # Ensure static directory exists
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -103,6 +145,10 @@ async def serve_liff_html():
 # API Endpoints
 @app.get("/api/overview")
 async def get_overview():
+    # Automatically sync with Google Sheet in background if stale (> 60s) or on initial page open
+    if time.time() - LAST_SHEET_SYNC_TIME > 60:
+        trigger_background_sheet_sync()
+        
     projects = engine.projects
     total_projects = len(projects)
     total_capacity = sum(p.get("capacity_kwp", 0.0) for p in projects)
@@ -406,40 +452,15 @@ async def handle_webhook(request: Request):
 @app.post("/api/sync-google-sheet")
 async def sync_google_sheet(request: Request):
     try:
-        body = await request.json()
-        raw_url = body.get("sheet_url", "").strip()
-        if not raw_url:
-            raise HTTPException(status_code=400, detail="กรุณาระบุลิงก์ Google Sheet")
-        
-        sheet_match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', raw_url)
-        if sheet_match:
-            sheet_id = sheet_match.group(1)
-            prog_csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=data%20Progress"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            
-            try:
-                r_prog = requests.get(prog_csv_url, headers=headers, timeout=12)
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"ไม่สามารถเชื่อมต่อ Google Sheets: {str(e)}")
-                
-            if r_prog.status_code != 200 or ("html" in r_prog.headers.get("Content-Type", "") and "<html" in r_prog.text.lower()):
-                raise HTTPException(
-                    status_code=403, 
-                    detail="Google Sheet ยังไม่ได้เปิดสิทธิ์แชร์! กรุณาเปิด Google Sheet กดปุ่ม 'แชร์ (Share)' ด้านบนขวา > เลือก 'ทุกคนที่มีลิงก์ (Anyone with link)' ให้เป็น 'ผู้มีสิทธิ์อ่าน (Viewer)' แล้วกดซิงค์ใหม่อีกครั้งครับ"
-                )
-                
-            csv_text = r_prog.text
-            reader = list(csv.reader(io.StringIO(csv_text)))
-            if len(reader) < 2:
-                raise HTTPException(status_code=400, detail="ไม่พบข้อมูลโครงการในชีต 'data Progress'")
-                
-            m_names = [m['name'] for m in engine.projects[0]['milestones']] if engine.projects else []
-            updated_count = engine.batch_sync_from_sheet_data(reader[1:], m_names)
-            
-            return {
-                "success": True, 
-                "message": f"ซิงค์ข้อมูลจาก Google Sheets สำเร็จเรียบร้อยแล้ว ({updated_count} โครงการ)"
-            }
+        count = do_sheet_sync()
+        return {
+            "success": True, 
+            "updated_projects": count,
+            "version": DATA_VERSION,
+            "message": f"ซิงค์ข้อมูลจาก Google Sheets สำเร็จเรียบร้อยแล้ว ({count} โครงการ)"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
