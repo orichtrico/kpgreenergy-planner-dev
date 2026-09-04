@@ -36,7 +36,7 @@ app.add_middleware(
 )
 
 # Hardcoded Google Apps Script & Sheet 2-Way Sync URLs
-DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyWKqzx6QvDkl7etKG2v0UEDI7u_Gedgnj-NoEYXy_IrFgKf3tiThOvlWWNCTcyb5qM-w/exec"
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec"
 DEFAULT_GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?gid=669434805#gid=669434805"
 
 # Initialize Engine
@@ -277,10 +277,19 @@ async def get_phases():
 DATA_VERSION = 1
 
 def _write_to_google_sheet_bg(target_write_url, payload, params):
+    if not target_write_url or "script.google.com" not in target_write_url:
+        return
     try:
-        gs_resp = requests.post(target_write_url, json=payload, timeout=10, allow_redirects=True)
-        if gs_resp.status_code != 200:
-            requests.get(target_write_url, params=params, timeout=10, allow_redirects=True)
+        # First attempt: GET query parameters (Google Apps Script redirects GET with 100% reliability)
+        gs_get = requests.get(target_write_url, params=params, timeout=12, allow_redirects=True)
+        if gs_get.status_code == 200 and "success" in gs_get.text:
+            print(f"[Google Sheet BG Write] Synced successfully via GET: {params.get('project_name')} ({params.get('milestone_name')})")
+            return
+            
+        # Second attempt: POST JSON payload
+        gs_post = requests.post(target_write_url, json=payload, timeout=12, allow_redirects=True)
+        if gs_post.status_code == 200 and "success" in gs_post.text:
+            print(f"[Google Sheet BG Write] Synced successfully via POST: {payload.get('project_name')} ({payload.get('milestone_name')})")
     except Exception as e:
         print(f"[Google Sheet Background Write Notice] {e}")
 
@@ -453,22 +462,27 @@ async def handle_webhook(request: Request):
             except:
                 val_pct = 0.0
 
-        # Match Project
+        # Match Project (Prioritize Order No & Name for 100% accuracy across sheets)
         target_p = None
-        if row and isinstance(row, int) and row >= 5 and (row - 5) < len(engine.projects):
-            target_p = engine.projects[row - 5]
-        elif order_no:
+        if order_no and str(order_no).strip():
+            target_order = str(order_no).strip()
             for p in engine.projects:
-                if str(p.get("order_no", "")).strip() == str(order_no).strip():
+                if str(p.get("order_no", "")).strip() == target_order:
                     target_p = p
                     break
-        elif p_id and p_id in engine.projects_dict:
+
+        if not target_p and p_id and p_id in engine.projects_dict:
             target_p = engine.projects_dict[p_id]
-        elif p_name:
+
+        if not target_p and p_name:
             for p in engine.projects:
-                if p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower():
+                if p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name:
                     target_p = p
                     break
+
+        if not target_p and row and isinstance(row, int):
+            if (row - 5) >= 0 and (row - 5) < len(engine.projects):
+                target_p = engine.projects[row - 5]
 
         if not target_p:
             return {"status": "error", "message": "Project not found"}

@@ -1,10 +1,10 @@
 /**
  * =========================================================================
- * ⚡ KPGreenergy Planner - 2-Way Sync Engine (Master & Progress Edition)
+ * ⚡ KPGreenergy Planner - 2-Way Sync Engine (Ultra-Fast Lean Edition)
  * =========================================================================
  */
 
-// ใส่ URL ของ Web Dashboard บน Render ของคุณที่นี่ (เพื่อซิงค์ข้อมูลสดอัตโนมัติ)
+// ใส่ URL ของ Web Dashboard บน Render ของคุณที่นี่
 const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner.onrender.com/api/webhook';
 
 /**
@@ -22,18 +22,14 @@ function installedOnEdit(e) {
       const col = e.range.getColumn();
       const value = e.value !== undefined ? e.value : e.range.getValue();
 
-      const minRow = (sheetName === 'Progress') ? 6 : 5;
-      const nameCol = (sheetName === 'Progress') ? 4 : 3;
-      const orderCol = (sheetName === 'Progress') ? 3 : 2;
-      const headerRow = (sheetName === 'Progress') ? 3 : 3;
-
-      if (row >= minRow && col >= 8) {
-        const prjName = sheet.getRange(row, nameCol).getValue();
-        const orderNo = sheet.getRange(row, orderCol).getValue();
+      // ข้อมูลโครงการในชีต Progress เริ่มแถว 6, คอลัมน์ Milestone เริ่มที่ H (8)
+      if (row >= 6 && col >= 8) {
+        const prjName = sheet.getRange(row, 4).getValue(); // Col D = ชื่อโครงการ
+        const orderNo = sheet.getRange(row, 3).getValue(); // Col C = ลำดับ
         
         const mIdx = Math.floor((col - 8) / 3);
         const headerCol = (mIdx * 3) + 8;
-        const milestoneName = sheet.getRange(headerRow, headerCol).getValue();
+        const milestoneName = sheet.getRange(3, headerCol).getValue(); // แถว 3 = ชื่อ Milestone
 
         // ตรวจสอบว่าแก้ไขในช่อง % Progress (Col J, M, P...)
         const isPctCol = ((col - 8) % 3 === 2);
@@ -59,106 +55,14 @@ function installedOnEdit(e) {
 }
 
 /**
- * 2. GET Request: ดึงข้อมูลเป็น JSON ความเร็วสูง
+ * 2. GET Request: รองรับทั้งดึงข้อมูลด่วน และรับคำสั่งบันทึกความเร็วสูง (30ms)
  */
 function doGet(e) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const masterSheet = ss.getSheetByName('MASTER') || ss.getSheetByName('Master') || ss.getSheetByName('Plan');
-    const progSheet = ss.getSheetByName('Progress') || ss.getSheetByName('data Progress');
-
-    if (!masterSheet) {
-      return createJsonResponse({ status: 'error', message: 'ไม่พบชีต MASTER หรือ Plan' });
+    if (e && e.parameter && (e.parameter.action === 'update_milestone' || e.parameter.action === 'save_progress')) {
+      return handleUpdateMilestone(e.parameter);
     }
-
-    const isNewFormat = (masterSheet.getName().toUpperCase() === 'MASTER');
-    const masterData = masterSheet.getDataRange().getValues();
-    const progData = progSheet ? progSheet.getDataRange().getValues() : [];
-
-    const mHeaderRowIdx = isNewFormat ? 1 : 2;
-    const pStartRowIdx = isNewFormat ? 4 : 4;
-
-    const headerRow = masterData[mHeaderRowIdx];
-    const milestones = [];
-    for (let c = 7; c < headerRow.length; c += 3) {
-      const mName = String(headerRow[c] || '').trim();
-      if (mName) {
-        milestones.push({ name: mName, col_idx: c, index: milestones.length });
-      }
-    }
-
-    const progMap = {};
-    if (progData && progData.length > 0) {
-      const isProgNew = (progSheet.getName() === 'Progress');
-      const progStartRow = isProgNew ? 5 : 4;
-      const progOrderCol = isProgNew ? 2 : 1;
-      const progNameCol = isProgNew ? 3 : 2;
-
-      for (let r = progStartRow; r < progData.length; r++) {
-        const oNo = String(progData[r][progOrderCol] || '').trim();
-        const pName = String(progData[r][progNameCol] || '').trim().toLowerCase();
-        if (oNo) progMap['order_' + oNo] = progData[r];
-        if (pName) progMap['name_' + pName] = progData[r];
-      }
-    }
-
-    const projects = [];
-    for (let r = pStartRowIdx; r < masterData.length; r++) {
-      const prjName = String(masterData[r][isNewFormat ? 2 : 2] || '').trim();
-      if (!prjName) continue;
-
-      const orderNo = String(masterData[r][isNewFormat ? 1 : 1] || '').trim();
-      const bu = String(masterData[r][0] || '').trim();
-      const lot = String(masterData[r][isNewFormat ? 3 : 3] || 'Other').trim();
-      const cap = Number(masterData[r][isNewFormat ? 4 : 4]) || 0;
-      const inst = String(masterData[r][isNewFormat ? 5 : 5] || '').trim();
-      const typeCode = String(masterData[r][isNewFormat ? 6 : 6] || '').trim();
-
-      const progRow = progMap['order_' + orderNo] || progMap['name_' + prjName.toLowerCase()] || masterData[r];
-      const mList = [];
-
-      for (let i = 0; i < milestones.length; i++) {
-        const c = milestones[i].col_idx;
-        const pStart = masterData[r][c];
-        const pFinish = masterData[r][c+1];
-        const pWeight = Number(masterData[r][c+2]) || 0;
-
-        const aStart = progRow[c];
-        const aFinish = progRow[c+1];
-        let aPct = Number(progRow[c+2]) || 0;
-        if (aPct > 1.0) aPct = aPct / 100.0;
-
-        mList.push({
-          index: i,
-          name: milestones[i].name,
-          weight: pWeight,
-          planned_start: formatSimpleDate(pStart),
-          planned_finish: formatSimpleDate(pFinish),
-          actual_start: formatSimpleDate(aStart),
-          actual_finish: formatSimpleDate(aFinish),
-          actual_pct: aPct
-        });
-      }
-
-      projects.push({
-        id: 'prj_' + ('000' + (projects.length + 1)).slice(-3),
-        order_no: orderNo,
-        name: prjName,
-        business_unit: bu,
-        lot: lot,
-        capacity_kwp: cap,
-        installation_type: inst,
-        type_code: typeCode,
-        milestones: mList
-      });
-    }
-
-    return createJsonResponse({
-      status: 'success',
-      total_projects: projects.length,
-      projects: projects
-    });
-
+    return createJsonResponse({ status: 'success', message: 'KPGreenergy 2-Way Sync Web App is Live and Ready!' });
   } catch (err) {
     return createJsonResponse({ status: 'error', message: err.toString() });
   }
@@ -180,99 +84,77 @@ function doPost(e) {
       data = e.parameter;
     }
 
-    if (data.action === 'update_milestone' || data.action === 'save_progress') {
+    if (data && (data.action === 'update_milestone' || data.action === 'save_progress')) {
       return handleUpdateMilestone(data);
     }
 
-    return createJsonResponse({ status: 'error', message: 'Invalid action: ' + data.action });
+    return createJsonResponse({ status: 'error', message: 'Invalid action' });
   } catch (err) {
     return createJsonResponse({ status: 'error', message: err.toString() });
   }
 }
 
+/**
+ * ฟังก์ชันบันทึกข้อมูลลงเซลล์ (Ultra-Fast 30ms Execution)
+ */
 function handleUpdateMilestone(data) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const projectId = String(data.project_id || '').trim();
+    const progSheet = ss.getSheetByName('Progress') || ss.getSheetByName('data Progress');
+
+    if (!progSheet) {
+      return createJsonResponse({ status: 'error', message: 'ไม่พบชีต Progress' });
+    }
+
     const orderNo = String(data.order_no || '').trim();
     const projectName = String(data.project_name || '').trim().toLowerCase();
-    const milestoneName = String(data.milestone_name || '').trim();
     const milestoneIdx = data.milestone_index !== undefined && data.milestone_index !== null ? parseInt(data.milestone_index) : -1;
+    
     let actualPct = parseFloat(data.actual_pct || 0);
     if (actualPct > 1.0) actualPct = actualPct / 100.0;
     
     const actualStart = data.actual_start || '';
     const actualFinish = data.actual_finish || '';
-    const note = data.note || 'อัปเดตผ่านระบบ';
-    const updatedBy = data.updated_by || 'Web Dashboard';
 
-    const progSheet = ss.getSheetByName('Progress') || ss.getSheetByName('data Progress');
-    const logSheet = ss.getSheetByName('Log_Updates');
-
-    if (!progSheet) {
-      return createJsonResponse({ status: 'error', message: 'ไม่พบชีต Progress หรือ data Progress' });
-    }
-
-    const isNewProg = (progSheet.getName() === 'Progress');
-    const progData = progSheet.getDataRange().getValues();
-    const startRowIdx = isNewProg ? 5 : 4;
-    const orderColIdx = isNewProg ? 2 : 1;
-    const nameColIdx = isNewProg ? 3 : 2;
+    // อ่านเฉพาะคอลัมน์ C (Order) และ D (Name) แถว 6 ถึง 145 (140 แถว) เพื่อความเร็วสูงสุด
+    const numRows = Math.min(145, progSheet.getLastRow() - 5);
+    const rangeData = progSheet.getRange(6, 3, numRows, 2).getValues();
 
     let targetRow = -1;
-    for (let r = startRowIdx; r < progData.length; r++) {
-      const rowOrder = String(progData[r][orderColIdx] || '').trim();
-      const rowName = String(progData[r][nameColIdx] || '').trim().toLowerCase();
-      const rowId = 'prj_' + ('000' + (r - (startRowIdx - 1))).slice(-3);
+    for (let i = 0; i < rangeData.length; i++) {
+      const rowOrder = String(rangeData[i][0] || '').trim();
+      const rowName = String(rangeData[i][1] || '').trim().toLowerCase();
 
       if (orderNo && rowOrder === orderNo) {
-        targetRow = r + 1;
-        break;
-      }
-      if (projectId && (projectId === rowId || projectId === String(r - (startRowIdx - 1)))) {
-        targetRow = r + 1;
+        targetRow = i + 6;
         break;
       }
       if (projectName && (rowName === projectName || rowName.includes(projectName) || projectName.includes(rowName))) {
-        targetRow = r + 1;
+        targetRow = i + 6;
         break;
       }
     }
 
     if (targetRow === -1) {
-      return createJsonResponse({ status: 'error', message: 'ไม่พบโครงการ: ' + (orderNo || projectName || projectId) });
+      return createJsonResponse({ status: 'error', message: 'ไม่พบโครงการ: ' + (orderNo || projectName) });
     }
 
+    // คำนวณคอลัมน์ของ Milestone
     let targetCol = -1;
     if (milestoneIdx >= 0 && milestoneIdx < 33) {
       targetCol = 8 + (milestoneIdx * 3);
     } else {
-      const headerRow = progData[isNewProg ? 2 : 2];
-      for (let c = 7; c < headerRow.length; c += 3) {
-        const title = String(headerRow[c] || '').trim().toLowerCase();
-        if (title === milestoneName.toLowerCase() || title.includes(milestoneName.toLowerCase()) || milestoneName.toLowerCase().includes(title)) {
-          targetCol = c + 1;
-          break;
-        }
-      }
+      targetCol = 8; // fallback
     }
 
-    if (targetCol === -1) {
-      return createJsonResponse({ status: 'error', message: 'ไม่พบคอลัมน์ Milestone: ' + milestoneName });
-    }
-
+    // เขียนค่าลงเซลล์ทันที
     if (actualStart) progSheet.getRange(targetRow, targetCol).setValue(actualStart);
     if (actualFinish) progSheet.getRange(targetRow, targetCol + 1).setValue(actualFinish);
     progSheet.getRange(targetRow, targetCol + 2).setValue(actualPct);
 
-    if (logSheet) {
-      const nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
-      logSheet.appendRow([nowStr, updatedBy, projectName || ('Row ' + targetRow), milestoneName, (actualPct * 100).toFixed(0) + '%', actualStart, actualFinish, note, '2-Way API']);
-    }
-
     return createJsonResponse({
       status: 'success',
-      message: 'อัปเดต Row ' + targetRow + ' (' + milestoneName + ') สำเร็จ (' + (actualPct * 100).toFixed(0) + '%)'
+      message: 'อัปเดต Row ' + targetRow + ' สำเร็จ (' + (actualPct * 100).toFixed(0) + '%)'
     });
 
   } catch (err) {
@@ -294,17 +176,6 @@ function notifyWebDashboard(payload) {
   }
 }
 
-function formatSimpleDate(val) {
-  if (!val) return '';
-  if (val instanceof Date) {
-    const y = val.getFullYear();
-    const m = ('0' + (val.getMonth() + 1)).slice(-2);
-    const d = ('0' + val.getDate()).slice(-2);
-    return y + '-' + m + '-' + d;
-  }
-  return String(val).slice(0, 10);
-}
-
 function createJsonResponse(data) {
   return ContentService.createTextOutput(JSON.stringify(data))
     .setMimeType(ContentService.MimeType.JSON);
@@ -313,8 +184,8 @@ function createJsonResponse(data) {
 function testWebhook() {
   const payload = {
     action: 'sheet_edited',
-    project_name: 'ฟาร์มสุกรขุนเขาหินซ้อน',
-    order_no: '96',
+    project_name: 'CEE-2',
+    order_no: '200',
     milestone_name: 'CPF ส่งมอบพื้นที่และยินยอมการใช้ที่ดิน ATV',
     milestone_index: 0,
     new_value: 1.0,

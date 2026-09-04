@@ -1652,7 +1652,7 @@ async function handleModalSubmit(e) {
   const finishD = document.getElementById('modal-finish-date').value;
   const pwdInput = document.getElementById('modal-editor-password');
   const pwd = pwdInput ? pwdInput.value.trim() : (sessionStorage.getItem('kpg_auth_pwd') || '');
-  const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyWKqzx6QvDkl7etKG2v0UEDI7u_Gedgnj-NoEYXy_IrFgKf3tiThOvlWWNCTcyb5qM-w/exec";
+  const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec";
   const savedSheetUrl = DEFAULT_WEBAPP_URL;
   
   if (!pwd) {
