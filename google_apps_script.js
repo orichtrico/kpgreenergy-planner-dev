@@ -1,11 +1,11 @@
 /**
  * =========================================================================
- * ⚡ KPGreenergy Planner - 2-Way Sync Engine (Ultra-Fast Lean Edition)
+ * ⚡ KPGreenergy Planner - 2-Way Sync Engine (Master & Progress Edition)
  * =========================================================================
  */
 
-// ใส่ URL ของ Web Dashboard บน Render ของคุณที่นี่
-const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner.onrender.com/api/webhook';
+// URL ของ Web Dashboard บน Render (kpgreenergy-planner-dev)
+const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner-dev.onrender.com/api/webhook';
 
 /**
  * 1. onEdit Trigger: เมื่อคุณพิมพ์แก้ % ใน Google Sheet ระบบจะส่งข้อมูลไปอัปเดตหน้าเว็บทันที!
