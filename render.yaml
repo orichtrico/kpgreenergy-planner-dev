@@ -12,4 +12,4 @@ services:
       - key: WEBAPP_URL
         value: https://script.google.com/macros/s/AKfycbyd6yl-DlKbY6xuXMUBWpBcUychl_5Av7AhDItbeodfISgPqCZHFOwWbZDFXOYm2MSO/exec
       - key: GOOGLE_SHEET_URL
-        value: https://docs.google.com/spreadsheets/d/1yCL9cvdxc26EPURkLxws937ZaLFIjI3XSHwQFel-JgE/edit?usp=sharing
+        value: https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?usp=sharing
