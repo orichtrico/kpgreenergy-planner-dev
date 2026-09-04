@@ -9,7 +9,3 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: WEBAPP_URL
-        value: https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec
-      - key: GOOGLE_SHEET_URL
-        value: https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?gid=669434805#gid=669434805

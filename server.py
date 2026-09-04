@@ -3,17 +3,13 @@ import json
 import re
 import csv
 import io
-import time
-import asyncio
-import urllib.request
 import requests
 from datetime import datetime, date
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 from engine import ProjectEngine
@@ -22,9 +18,7 @@ app = FastAPI(title="KPGreenergy Planner", version="1.0.0")
 
 # Security Password for editing
 EDITOR_PASSWORD = "KPGEditor"
-
-# Enable GZip Compression (Reduces network payload by ~90%)
-app.add_middleware(GZipMiddleware, minimum_size=500)
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec"
 
 # Enable CORS
 app.add_middleware(
@@ -35,14 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Hardcoded Google Apps Script & Sheet 2-Way Sync URLs
-DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec"
-DEFAULT_GSHEET_URL = "https://docs.google.com/spreadsheets/d/1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y/edit?gid=669434805#gid=669434805"
-
 # Initialize Engine
 engine = ProjectEngine()
-engine.google_sheet_webapp_url = DEFAULT_WEBAPP_URL
-engine.google_sheet_url = DEFAULT_GSHEET_URL
 
 # Ensure static directory exists
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -88,97 +76,10 @@ async def serve_liff():
 async def serve_liff_html():
     return await serve_liff()
 
-# Background Non-Blocking Auto-Sync Worker
-def _fetch_and_apply_google_sheet():
-    global DATA_VERSION
-    url = getattr(engine, "google_sheet_webapp_url", "") or os.environ.get("GOOGLE_SHEET_URL", "") or os.environ.get("WEBAPP_URL", "")
-    if not url or "script.google.com" not in url:
-        return
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=15) as response:
-            res_text = response.read().decode('utf-8')
-            data = json.loads(res_text)
-            
-        projects_from_sheet = data.get("projects", [])
-        if not projects_from_sheet:
-            return
-            
-        updated = False
-        for idx, p_sheet in enumerate(projects_from_sheet):
-            sheet_order = str(p_sheet.get("order_no", "")).strip()
-            
-            target_p = None
-            if idx < len(engine.projects):
-                target_p = engine.projects[idx]
-            else:
-                for p in engine.projects:
-                    if str(p.get("order_no", "")).strip() == sheet_order:
-                        target_p = p
-                        break
-            
-            if target_p:
-                for m_idx, m_s in enumerate(p_sheet.get("milestones", [])):
-                    act_pct = float(m_s.get("actual_pct", 0.0))
-                    target_m = None
-                    if m_idx < len(target_p.get("milestones", [])):
-                        target_m = target_p["milestones"][m_idx]
-                    else:
-                        m_name = str(m_s.get("name", "")).strip().lower()
-                        for m in target_p.get("milestones", []):
-                            if m["name"].strip().lower() == m_name:
-                                target_m = m
-                                break
-                    
-                    if target_m:
-                        target_m["actual_pct"] = max(0.0, min(1.0, act_pct))
-                        if m_s.get("actual_start"):
-                            target_m["actual_start"] = m_s.get("actual_start")
-                        if m_s.get("actual_finish"):
-                            target_m["actual_finish"] = m_s.get("actual_finish")
-                        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
-                        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
-                
-                total_act = sum(m["actual_contribution"] for m in target_p["milestones"])
-                target_p["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
-                target_p["variance_pct"] = round(target_p["actual_progress_pct"] - target_p["planned_progress_pct"], 2)
-                if target_p["actual_progress_pct"] >= 99.9:
-                    target_p["status"] = "COMPLETED"
-                    target_p["status_th"] = "เสร็จสมบูรณ์"
-                elif target_p["variance_pct"] >= 0:
-                    target_p["status"] = "ON_TRACK"
-                    target_p["status_th"] = "ตามแผนงาน"
-                elif target_p["variance_pct"] >= -10:
-                    target_p["status"] = "SLIGHT_DELAY"
-                    target_p["status_th"] = "ล่าช้าเล็กน้อย"
-                else:
-                    target_p["status"] = "DELAYED"
-                    target_p["status_th"] = "ล่าช้ากว่าแผน"
-                    
-                target_p["s_curve"] = engine.generate_project_scurve(target_p)
-                updated = True
-                
-        if updated:
-            engine.save_to_cache()
-            DATA_VERSION += 1
-            print(f"[Auto-Sync] Synchronized {len(projects_from_sheet)} projects from Google Sheet into cache.")
-    except Exception as e:
-        print(f"[Auto-Sync Notice] {e}")
-
-async def auto_sync_worker():
-    while True:
-        await asyncio.sleep(120) # Auto check every 2 mins quietly in background
-        await asyncio.to_thread(_fetch_and_apply_google_sheet)
-
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(asyncio.to_thread(_fetch_and_apply_google_sheet))
-    asyncio.create_task(auto_sync_worker())
-
-# API Endpoints (Instant <2ms in-memory cache response)
+# API Endpoints
 @app.get("/api/overview")
 async def get_overview():
-    projects = [p for p in engine.projects if "CC" not in str(p.get("lot", "")).strip().upper()]
+    projects = engine.projects
     total_projects = len(projects)
     total_capacity = sum(p.get("capacity_kwp", 0.0) for p in projects)
     
@@ -196,7 +97,7 @@ async def get_overview():
     lots = sorted(list(set(p.get("lot") for p in projects if p.get("lot"))))
     installation_types = sorted(list(set(p.get("installation_type") for p in projects if p.get("installation_type"))))
     
-    phases = [ph for ph in engine.get_phase_summary() if "CC" not in str(ph.get("lot", "")).strip().upper()]
+    phases = engine.get_phase_summary()
 
     return {
         "total_projects": total_projects,
@@ -223,10 +124,6 @@ async def get_projects(
 ):
     results = []
     for p in engine.projects:
-        # Exclude all projects where Lot contains 'CC'
-        if "CC" in str(p.get("lot", "")).strip().upper():
-            continue
-            
         if lot and p.get("lot") != lot:
             continue
         if business_unit and p.get("business_unit") != business_unit:
@@ -258,8 +155,7 @@ async def get_projects(
             "planned_progress_pct": p["planned_progress_pct"],
             "variance_pct": p["variance_pct"],
             "status": p["status"],
-            "status_th": p["status_th"],
-            "milestones": p.get("milestones", [])
+            "status_th": p["status_th"]
         })
     
     return {"count": len(results), "projects": results}
@@ -272,49 +168,25 @@ async def get_project_detail(project_id: str):
 
 @app.get("/api/phases")
 async def get_phases():
-    return [ph for ph in engine.get_phase_summary() if "CC" not in str(ph.get("lot", "")).strip().upper()]
-
-DATA_VERSION = 1
-
-def _write_to_google_sheet_bg(target_write_url, payload, params):
-    if not target_write_url or "script.google.com" not in target_write_url:
-        return
-    try:
-        # First attempt: GET query parameters (Google Apps Script redirects GET with 100% reliability)
-        gs_get = requests.get(target_write_url, params=params, timeout=12, allow_redirects=True)
-        if gs_get.status_code == 200 and "success" in gs_get.text:
-            print(f"[Google Sheet BG Write] Synced successfully via GET: {params.get('project_name')} ({params.get('milestone_name')})")
-            return
-            
-        # Second attempt: POST JSON payload
-        gs_post = requests.post(target_write_url, json=payload, timeout=12, allow_redirects=True)
-        if gs_post.status_code == 200 and "success" in gs_post.text:
-            print(f"[Google Sheet BG Write] Synced successfully via POST: {payload.get('project_name')} ({payload.get('milestone_name')})")
-    except Exception as e:
-        print(f"[Google Sheet Background Write Notice] {e}")
-
-@app.get("/api/live-sync-status")
-async def get_live_sync_status():
-    return {
-        "version": DATA_VERSION,
-        "timestamp": time.time()
-    }
+    return engine.get_phase_summary()
 
 @app.post("/api/update-milestone")
 async def update_milestone(req: MilestoneUpdateRequest):
-    global DATA_VERSION
     # 1. Verify Password: Allow 'KPGEditor' OR LINE LIFF submissions
     is_liff = (req.updated_by == "LINE LIFF User" or "LINE" in (req.updated_by or ""))
     is_valid_pwd = (req.password == EDITOR_PASSWORD)
     
-    if not is_liff and not is_valid_pwd:
-        raise HTTPException(status_code=401, detail="รหัสผ่านแก้ไขไม่ถูกต้อง (กรุณาใช้รหัส KPGEditor)")
-
-    pct = max(0.0, min(100.0, req.actual_pct))
+    if not (is_valid_pwd or is_liff):
+        raise HTTPException(
+            status_code=401, 
+            detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่รหัสผ่าน 'KPGEditor' เพื่อยืนยันการแก้ไขข้อมูล"
+        )
+    
+    pct = req.actual_pct
     if pct > 1.0:
         pct = pct / 100.0
-        
-    res = engine.update_milestone(
+    
+    success = engine.update_milestone(
         project_id=req.project_id,
         milestone_name=req.milestone_name,
         actual_pct=pct,
@@ -322,67 +194,59 @@ async def update_milestone(req: MilestoneUpdateRequest):
         actual_finish=req.actual_finish
     )
     
-    if not res or req.project_id not in engine.projects_dict:
+    if not success:
         raise HTTPException(status_code=400, detail="Failed to update milestone. Check project_id and milestone_name.")
     
     updated_project = engine.projects_dict[req.project_id]
-    DATA_VERSION += 1
     
-    # 2. Record in Activity Audit Log
-    source_name = "LINE LIFF" if is_liff else "Web Dashboard"
-    engine.log_activity(
-        project_id=updated_project["id"],
-        project_name=updated_project["name"],
-        milestone_name=req.milestone_name,
-        actual_pct=pct,
-        actual_start=req.actual_start,
-        actual_finish=req.actual_finish,
-        updated_by=req.updated_by or "Web Editor",
-        note=req.note or f"อัปเดตความก้าวหน้า {pct*100:.1f}%",
-        source=source_name
-    )
-    
-    # 3. Non-blocking Background Write-back to Google Sheet
-    target_write_url = req.sheet_url or getattr(engine, "google_sheet_webapp_url", "") or ""
+    # 2. Write-back to Google Sheet via Google Apps Script Web App
+    gsheet_synced = False
+    gsheet_msg = ""
+    target_write_url = req.sheet_url or getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
     
     if "script.google.com" in target_write_url:
-        m_idx = 0
-        for idx, m in enumerate(updated_project.get("milestones", [])):
-            if m["name"].strip().lower() == req.milestone_name.strip().lower():
-                m_idx = idx
-                break
-        
-        payload = {
-            "action": "update_milestone",
-            "project_id": updated_project["id"],
-            "order_no": str(updated_project.get("order_no", "")),
-            "project_name": updated_project["name"],
-            "milestone_name": req.milestone_name,
-            "milestone_index": m_idx,
-            "actual_pct": pct,
-            "actual_start": req.actual_start or "",
-            "actual_finish": req.actual_finish or "",
-            "updated_by": req.updated_by or "Web Editor",
-            "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)"
-        }
-        params = {
-            "action": "update_milestone",
-            "project_id": updated_project["id"],
-            "order_no": str(updated_project.get("order_no", "")),
-            "project_name": updated_project["name"],
-            "milestone_name": req.milestone_name,
-            "milestone_index": str(m_idx),
-            "actual_pct": str(pct),
-            "actual_start": req.actual_start or "",
-            "actual_finish": req.actual_finish or "",
-            "updated_by": req.updated_by or "Web Editor"
-        }
-        asyncio.create_task(asyncio.to_thread(_write_to_google_sheet_bg, target_write_url, payload, params))
+        try:
+            m_idx = 0
+            for idx, m in enumerate(updated_project.get("milestones", [])):
+                if m["name"].strip().lower() == req.milestone_name.strip().lower():
+                    m_idx = idx
+                    break
+
+            payload = {
+                "action": "update_milestone",
+                "project_id": updated_project["id"],
+                "project_name": updated_project["name"],
+                "order_no": str(updated_project.get("order_no") or ""),
+                "milestone_name": req.milestone_name,
+                "milestone_index": m_idx,
+                "actual_pct": pct,
+                "actual_start": req.actual_start or "",
+                "actual_finish": req.actual_finish or "",
+                "updated_by": req.updated_by or "Web Editor",
+                "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)"
+            }
+            gs_resp = requests.post(target_write_url, json=payload, timeout=12, allow_redirects=True)
+            if gs_resp.status_code == 200:
+                try:
+                    res_json = gs_resp.json()
+                    if res_json.get("status") == "success":
+                        gsheet_synced = True
+                        gsheet_msg = " และบันทึกลง Google Sheet เรียบร้อยแล้ว ✅"
+                    else:
+                        gsheet_msg = f" (Google Sheet แจ้ง: {res_json.get('message')})"
+                except:
+                    gsheet_synced = True
+                    gsheet_msg = " และส่งข้อมูลไปยัง Google Sheet เรียบร้อยแล้ว ✅"
+            else:
+                gsheet_msg = f" (Google Sheet ตอบกลับสถานะ {gs_resp.status_code})"
+        except Exception as e:
+            print(f"Warning: Failed to write to Google Sheet Web App: {e}")
+            gsheet_msg = f" (ไม่สามารถเขียนลงชีตได้: {str(e)})"
 
     return {
         "success": True,
-        "message": f"อัปเดต {req.milestone_name} เป็น {pct*100:.1f}% สำเร็จ ✅",
-        "gsheet_synced": True,
+        "message": f"อัปเดต {req.milestone_name} เป็น {pct*100:.1f}% สำเร็จ{gsheet_msg}",
+        "gsheet_synced": gsheet_synced,
         "project": {
             "id": updated_project["id"],
             "name": updated_project["name"],
@@ -404,19 +268,26 @@ async def handle_webhook(request: Request):
     
     if action in ["update_milestone", "save_progress"]:
         p_id = body.get("project_id")
+        p_order = str(body.get("order_no") or "").strip()
         p_name = body.get("project_name", "").strip().lower()
         m_name = body.get("milestone_name", "").strip()
+        m_idx = body.get("milestone_index")
         pct = float(body.get("actual_pct", 0.0))
         if pct > 1.0:
             pct = pct / 100.0
         
-        if not p_id and p_name:
+        if not p_id:
             for p in engine.projects:
-                if p["name"].strip().lower() == p_name:
+                if (p_order and str(p.get("order_no")) == p_order) or \
+                   (p_name and (p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name)):
                     p_id = p["id"]
                     break
         
         if p_id:
+            # If m_name is missing but m_idx is present
+            if not m_name and m_idx is not None and 0 <= int(m_idx) < len(engine.projects_dict[p_id]["milestones"]):
+                m_name = engine.projects_dict[p_id]["milestones"][int(m_idx)]["name"]
+                
             eng_res = engine.update_milestone(
                 project_id=p_id,
                 milestone_name=m_name,
@@ -424,134 +295,42 @@ async def handle_webhook(request: Request):
                 actual_start=body.get("actual_start"),
                 actual_finish=body.get("actual_finish")
             )
-            p_obj = engine.projects_dict.get(p_id, {})
-            engine.log_activity(
-                project_id=p_id,
-                project_name=p_obj.get("name", p_name),
-                milestone_name=m_name,
-                actual_pct=pct,
-                actual_start=body.get("actual_start"),
-                actual_finish=body.get("actual_finish"),
-                updated_by=body.get("updated_by", "Webhook API"),
-                note=body.get("note", "อัปเดตผ่าน Webhook"),
-                source="Webhook"
-            )
-            return {"status": "ok", "updated": eng_res, "project_id": p_id}
+            return {"status": "ok", "updated": eng_res, "project_id": p_id, "milestone": m_name, "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"]}
 
-    if action in ["sheet_edited", "on_edit", "update_milestone", "save_progress"]:
-        row = body.get("row")
-        order_no = body.get("order_no")
-        p_id = body.get("project_id")
+    if action in ["sheet_edited", "on_edit"]:
+        p_order = str(body.get("order_no") or "").strip()
         p_name = str(body.get("project_name", "")).strip().lower()
-        m_idx = body.get("milestone_index")
         m_name = str(body.get("milestone_name", "")).strip()
-        
-        val_pct = 0.0
-        if body.get("actual_pct") is not None:
-            try:
-                val_pct = float(str(body.get("actual_pct")).replace("%", "").strip())
-                if val_pct > 1.0:
-                    val_pct = val_pct / 100.0
-            except:
-                val_pct = 0.0
-        elif body.get("new_value") is not None:
-            try:
-                val_pct = float(str(body.get("new_value")).replace("%", "").strip())
-                if val_pct > 1.0:
-                    val_pct = val_pct / 100.0
-            except:
-                val_pct = 0.0
-
-        # Match Project (Prioritize Order No & Name for 100% accuracy across sheets)
-        target_p = None
-        if order_no and str(order_no).strip():
-            target_order = str(order_no).strip()
-            for p in engine.projects:
-                if str(p.get("order_no", "")).strip() == target_order:
-                    target_p = p
-                    break
-
-        if not target_p and p_id and p_id in engine.projects_dict:
-            target_p = engine.projects_dict[p_id]
-
-        if not target_p and p_name:
-            for p in engine.projects:
-                if p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name:
-                    target_p = p
-                    break
-
-        if not target_p and row and isinstance(row, int):
-            if (row - 5) >= 0 and (row - 5) < len(engine.projects):
-                target_p = engine.projects[row - 5]
-
-        if not target_p:
-            return {"status": "error", "message": "Project not found"}
-
-        # Match Milestone
-        target_m = None
-        if m_idx is not None and isinstance(m_idx, int) and 0 <= m_idx < len(target_p.get("milestones", [])):
-            target_m = target_p["milestones"][m_idx]
-        elif m_name:
-            for m in target_p.get("milestones", []):
-                if m["name"].strip().lower() == m_name.lower() or m_name.lower() in m["name"].strip().lower():
-                    target_m = m
-                    break
-
-        if not target_m:
-            return {"status": "error", "message": "Milestone not found"}
-
-        # Update Milestone
-        target_m["actual_pct"] = max(0.0, min(1.0, val_pct))
-        if body.get("actual_start"):
-            target_m["actual_start"] = str(body.get("actual_start"))
-        if body.get("actual_finish"):
-            target_m["actual_finish"] = str(body.get("actual_finish"))
-        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
-        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
-
-        # Recalculate Project Stats
-        total_act = sum(m["actual_contribution"] for m in target_p["milestones"])
-        target_p["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
-        target_p["variance_pct"] = round(target_p["actual_progress_pct"] - target_p["planned_progress_pct"], 2)
-        if target_p["actual_progress_pct"] >= 99.9:
-            target_p["status"] = "COMPLETED"
-            target_p["status_th"] = "เสร็จสมบูรณ์"
-        elif target_p["variance_pct"] >= 0:
-            target_p["status"] = "ON_TRACK"
-            target_p["status_th"] = "ตามแผนงาน"
-        elif target_p["variance_pct"] >= -10:
-            target_p["status"] = "SLIGHT_DELAY"
-            target_p["status_th"] = "ล่าช้าเล็กน้อย"
-        else:
-            target_p["status"] = "DELAYED"
-            target_p["status_th"] = "ล่าช้ากว่าแผน"
+        m_idx = body.get("milestone_index")
+        val_str = str(body.get("new_value", "0")).replace("%", "").strip()
+        try:
+            val_pct = float(val_str)
+            if val_pct > 1.0:
+                val_pct = val_pct / 100.0
+        except:
+            val_pct = 0.0
             
-        target_p["s_curve"] = engine.generate_project_scurve(target_p)
-        engine.save_to_cache()
-        global DATA_VERSION
-        DATA_VERSION += 1
-
-        # Audit Log
-        engine.log_activity(
-            project_id=target_p["id"],
-            project_name=target_p["name"],
-            milestone_name=target_m["name"],
-            actual_pct=target_m["actual_pct"],
-            actual_start=target_m.get("actual_start"),
-            actual_finish=target_m.get("actual_finish"),
-            updated_by=body.get("updated_by", "Google Sheet onEdit"),
-            note=f"แก้ไขผ่านเซลล์ใน Google Sheet ({val_pct*100:.1f}%)",
-            source="Google Sheet Webhook"
-        )
-        return {
-            "status": "ok",
-            "project_id": target_p["id"],
-            "milestone": target_m["name"],
-            "new_pct": val_pct,
-            "actual_progress_pct": target_p["actual_progress_pct"]
-        }
+        p_id = None
+        for p in engine.projects:
+            if (p_order and str(p.get("order_no")) == p_order) or \
+               (p_name and (p["name"].strip().lower() == p_name or p_name in p["name"].strip().lower() or p["name"].strip().lower() in p_name)):
+                p_id = p["id"]
+                break
+                
+        if p_id:
+            if not m_name and m_idx is not None and 0 <= int(m_idx) < len(engine.projects_dict[p_id]["milestones"]):
+                m_name = engine.projects_dict[p_id]["milestones"][int(m_idx)]["name"]
+                
+            if m_name:
+                eng_res = engine.update_milestone(
+                    project_id=p_id,
+                    milestone_name=m_name,
+                    actual_pct=val_pct
+                )
+                return {"status": "ok", "updated": eng_res, "project_id": p_id, "milestone": m_name, "new_pct": val_pct, "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"]}
             
     return {"status": "received", "body": body}
+
 
 @app.post("/api/sync-google-sheet")
 async def sync_google_sheet(request: Request):
@@ -675,172 +454,15 @@ async def save_webapp_url_endpoint(request: Request):
 
 @app.get("/api/get-webapp-url")
 async def get_webapp_url_endpoint():
-    return {"webapp_url": getattr(engine, "google_sheet_webapp_url", "")}
+    return {"webapp_url": getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL}
 
-@app.get("/api/activity-logs")
-async def get_activity_logs_endpoint(limit: int = 50, project_id: Optional[str] = None):
-    logs = engine.get_activity_logs(limit=limit, project_id=project_id)
-    return {"count": len(logs), "logs": logs}
-
-@app.get("/api/export-csv")
-async def export_csv_endpoint():
-    rows = engine.generate_export_rows()
-    if not rows:
-        raise HTTPException(status_code=404, detail="No project data available to export")
-    
-    output = io.StringIO()
-    # Write UTF-8 BOM so Excel opens Thai characters seamlessly
-    output.write('\ufeff')
-    fieldnames = list(rows[0].keys())
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    writer.writeheader()
-    for row in rows:
-        writer.writerow(row)
-    
-    csv_content = output.getvalue()
-    today_str = date.today().strftime('%Y-%m-%d')
-    filename = f"KPGreenergy_137_Projects_Export_{today_str}.csv"
-    
-    return Response(
-        content=csv_content.encode('utf-8-sig'),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-@app.get("/api/export-data")
-async def export_data_endpoint():
-    rows = engine.generate_export_rows()
-    return {"total_projects": len(rows), "rows": rows}
-
-@app.get("/api/cctv-config")
-async def get_cctv_config_endpoint(project_id: Optional[str] = None):
-    return engine.get_cctv_config(project_id=project_id)
-
-class CctvConfigRequest(BaseModel):
-    project_id: Optional[str] = "default"
-    cameras: List[dict]
-
-@app.post("/api/cctv-config")
-async def save_cctv_config_endpoint(req: CctvConfigRequest):
-    success = engine.save_cctv_config(project_id=req.project_id or "default", cameras=req.cameras)
-    if success:
-        return {"success": True, "message": "บันทึกการตั้งค่ากล้อง CCTV เรียบร้อยแล้ว"}
-    raise HTTPException(status_code=500, detail="Failed to save CCTV config")
-
-@app.get("/api/backups")
-async def get_backups_endpoint():
-    backups = engine.list_backups()
-    return {"count": len(backups), "backups": backups}
-
-@app.post("/api/backups")
-async def create_backup_endpoint():
-    fname = engine.create_backup_snapshot()
-    if fname:
-        return {"success": True, "message": f"สร้าง Backup สำเร็จ: {fname}", "filename": fname}
-    raise HTTPException(status_code=500, detail="Failed to create backup")
-
-@app.get("/api/line-flex-preview")
-async def get_line_flex_preview(project_id: Optional[str] = None, milestone_name: Optional[str] = None):
-    prj = None
-    if project_id and project_id in engine.projects_dict:
-        prj = engine.projects_dict[project_id]
-    elif engine.projects:
-        prj = engine.projects[0]
-        
-    p_name = prj["name"] if prj else "โครงการโซลาร์"
-    p_lot = prj["lot"] if prj else "Lot 1"
-    p_act = prj["actual_progress_pct"] if prj else 0.0
-    p_plan = prj["planned_progress_pct"] if prj else 0.0
-    p_status = prj["status_th"] if prj else "ตามแผนงาน"
-    m_name = milestone_name or "Soiling Test"
-    
-    flex_payload = {
-        "type": "flex",
-        "altText": f"⚡ รายงานความก้าวหน้า: {p_name}",
-        "contents": {
-            "type": "bubble",
-            "header": {
-                "type": "box",
-                "layout": "vertical",
-                "backgroundColor": "#043327",
-                "paddingAll": "16px",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": "⚡ KPGreenergy Planner",
-                        "weight": "bold",
-                        "color": "#f59e0b",
-                        "size": "sm"
-                    },
-                    {
-                        "type": "text",
-                        "text": p_name,
-                        "weight": "bold",
-                        "color": "#ffffff",
-                        "size": "lg",
-                        "wrap": True,
-                        "margin": "xs"
-                    },
-                    {
-                        "type": "text",
-                        "text": f"เฟส: {p_lot} | สถานะ: {p_status}",
-                        "color": "#a7f3d0",
-                        "size": "xs",
-                        "margin": "xs"
-                    }
-                ]
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "md",
-                "contents": [
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "contents": [
-                            {"type": "text", "text": "ความก้าวหน้าจริง", "size": "xs", "color": "#64748b", "flex": 1},
-                            {"type": "text", "text": f"{p_act}%", "size": "sm", "weight": "bold", "color": "#059669", "align": "end"}
-                        ]
-                    },
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "contents": [
-                            {"type": "text", "text": "แผนงานสะสม", "size": "xs", "color": "#64748b", "flex": 1},
-                            {"type": "text", "text": f"{p_plan}%", "size": "sm", "weight": "bold", "color": "#2563eb", "align": "end"}
-                        ]
-                    },
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "contents": [
-                            {"type": "text", "text": "รายการงานล่าสุด", "size": "xs", "color": "#64748b", "flex": 1},
-                            {"type": "text", "text": m_name, "size": "xs", "weight": "bold", "color": "#0f172a", "align": "end"}
-                        ]
-                    }
-                ]
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "color": "#043327",
-                        "action": {
-                            "type": "uri",
-                            "label": "เปิดดูรายละเอียดโครงการ",
-                            "uri": "https://kpgreenergy-planner.onrender.com"
-                        }
-                    }
-                ]
-            }
-        }
-    }
-    return {"flex_message": flex_payload}
+@app.get("/api/google-apps-script-code")
+async def get_gas_code():
+    gas_path = os.path.join(BASE_DIR, "google_apps_script.js")
+    if os.path.exists(gas_path):
+        with open(gas_path, "r", encoding="utf-8") as f:
+            return {"code": f.read()}
+    return {"code": "// Google Apps Script template"}
 
 if __name__ == "__main__":
     import uvicorn

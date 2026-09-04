@@ -76,11 +76,6 @@ async function loadInitialData() {
     populateSimulatorDropdowns();
     populateCctvDropdown();
     
-    // Load new modules in parallel
-    loadActivityLogs();
-    loadBackupList();
-    loadLineFlexPreview();
-    
     // Select first project by default
     if (allProjects.length > 0 && !currentProject) {
       await selectProject(allProjects[0].id);
@@ -89,68 +84,6 @@ async function loadInitialData() {
   } catch (err) {
     console.error("Error loading data:", err);
     showToast("เกิดข้อผิดพลาดในการโหลดข้อมูล", "error");
-  }
-}
-
-// Auto-sync from Google Sheet quietly in background on page load
-async function silentAutoSyncGoogleSheet() {
-  try {
-    const savedUrl = localStorage.getItem('kpgreenergy_webapp_url') || localStorage.getItem('kpgreenergy_gsheet_url');
-    const res = await fetch('/api/get-webapp-url');
-    const data = await res.json();
-    const activeUrl = savedUrl || data.webapp_url;
-
-    if (activeUrl) {
-      fetch('/api/sync-google-sheet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sheet_url: activeUrl })
-      }).then(r => r.json()).then(d => {
-        if (d.success) {
-          console.log("[Auto-Sync] Synced with Google Sheets successfully.");
-          fetch('/api/overview').then(r => r.json()).then(ov => {
-            globalOverview = ov;
-            renderKPIs();
-          });
-        }
-      }).catch(e => {});
-    }
-  } catch (e) {}
-}
-
-// Real-time Instant Search in Tab 2
-function onProjectSearchInput(keyword) {
-  const q = (keyword || '').toLowerCase().trim();
-  const lotSel = document.getElementById('filter-lot');
-  const buSel = document.getElementById('filter-bu');
-  const selectedLot = lotSel ? lotSel.value : '';
-  const selectedBu = buSel ? buSel.value : '';
-
-  let filtered = allProjects;
-  if (selectedLot) {
-    filtered = filtered.filter(p => p.lot === selectedLot);
-  }
-  if (selectedBu) {
-    filtered = filtered.filter(p => p.business_unit === selectedBu);
-  }
-  if (q) {
-    filtered = filtered.filter(p => 
-      p.name.toLowerCase().includes(q) || 
-      (p.order_no && String(p.order_no).toLowerCase().includes(q)) ||
-      (p.business_unit && p.business_unit.toLowerCase().includes(q)) ||
-      (p.lot && p.lot.toLowerCase().includes(q)) ||
-      (p.installation_type && p.installation_type.toLowerCase().includes(q))
-    );
-  }
-
-  const matchCountEl = document.getElementById('search-match-count');
-  if (matchCountEl) {
-    matchCountEl.innerText = `${filtered.length} / ${allProjects.length} โครงการ`;
-  }
-
-  updateProjectDropdown(filtered);
-  if (filtered.length > 0) {
-    selectProject(filtered[0].id);
   }
 }
 
@@ -440,25 +373,15 @@ function onProjectSelect() {
   }
 }
 
-function selectProject(projectId) {
-  if (!projectId) return;
-  
-  // 1. Instant Zero-Latency memory lookup from preloaded allProjects
-  const found = allProjects.find(p => p.id === projectId);
-  if (found) {
-    currentProject = found;
+async function selectProject(projectId) {
+  try {
+    const res = await fetch(`/api/projects/${projectId}`);
+    if (!res.ok) throw new Error("Project not found");
+    currentProject = await res.json();
     renderProjectDetail();
-    return;
+  } catch (err) {
+    console.error("Error fetching project:", err);
   }
-  
-  // 2. Fallback network fetch if needed
-  fetch(`/api/projects/${projectId}`)
-    .then(r => r.json())
-    .then(p => {
-      currentProject = p;
-      renderProjectDetail();
-    })
-    .catch(err => console.error("Error fetching project:", err));
 }
 
 function renderProjectDetail() {
@@ -491,162 +414,43 @@ function renderProjectDetail() {
   document.getElementById('prj-act-start').innerText = p.actual_start || '-';
   document.getElementById('prj-act-finish').innerText = p.actual_finish || '-';
   
-  // Compute or retrieve S-Curve instantly in 0.1ms
-  if (!p.s_curve || !p.s_curve.labels || p.s_curve.labels.length === 0) {
-    p.s_curve = computeProjectScurve(p);
-  }
-  
-  // Render S-Curve instantly
+  // Render S-Curve
   renderProjectScurve(p.s_curve);
   
-  // Render Milestone Table in 1 tick
+  // Render Milestone Table
   renderMilestonesTable(p.milestones || []);
 }
 
-function computeProjectScurve(p) {
-  const milestones = p.milestones || [];
-  const dates = [];
-  milestones.forEach(m => {
-    ['planned_start', 'planned_finish', 'actual_start', 'actual_finish'].forEach(k => {
-      if (m[k]) {
-        const d = new Date(m[k]);
-        if (!isNaN(d.getTime())) dates.push(d);
-      }
-    });
-  });
-
-  if (dates.length === 0) {
-    return { labels: [], planned_cum: [], actual_cum: [], planned_weekly: [], actual_weekly: [] };
-  }
-
-  let minDate = new Date(Math.min(...dates));
-  let maxDate = new Date(Math.max(...dates));
-
-  const day = minDate.getDay();
-  const diffToMon = minDate.getDate() - day + (day === 0 ? -6 : 1);
-  const startMon = new Date(minDate);
-  startMon.setDate(diffToMon);
-  startMon.setHours(0, 0, 0, 0);
-
-  const endMon = new Date(maxDate);
-  endMon.setDate(endMon.getDate() + ((7 - endMon.getDay()) % 7));
-  endMon.setHours(23, 59, 59, 999);
-
-  const weeks = [];
-  const labels = [];
-  let curr = new Date(startMon);
-  let wIdx = 1;
-  while (curr <= endMon) {
-    weeks.push(new Date(curr));
-    const dStr = ("0" + curr.getDate()).slice(-2) + "/" + ("0" + (curr.getMonth() + 1)).slice(-2);
-    labels.push(`W${wIdx} (${dStr})`);
-    curr.setDate(curr.getDate() + 7);
-    wIdx++;
-  }
-
-  const numWeeks = weeks.length;
-  const weeklyPlan = new Array(numWeeks).fill(0.0);
-  const weeklyAct = new Array(numWeeks).fill(0.0);
-
-  milestones.forEach(m => {
-    const w = m.weight || 0;
-    if (w <= 0) return;
-    const ps = m.planned_start ? new Date(m.planned_start) : null;
-    const pf = m.planned_finish ? new Date(m.planned_finish) : null;
-    if (ps && pf && !isNaN(ps) && !isNaN(pf)) {
-      const covered = [];
-      weeks.forEach((wMon, i) => {
-        const wSun = new Date(wMon);
-        wSun.setDate(wSun.getDate() + 6);
-        if (!(pf < wMon || ps > wSun)) covered.push(i);
-      });
-      if (covered.length > 0) {
-        const inc = w / covered.length;
-        covered.forEach(i => weeklyPlan[i] += inc);
-      }
-    }
-
-    const actPct = m.actual_pct || 0;
-    if (actPct > 0) {
-      const as = m.actual_start ? new Date(m.actual_start) : ps;
-      const af = m.actual_finish ? new Date(m.actual_finish) : (actPct >= 1.0 ? new Date() : null);
-      const coveredAct = [];
-      weeks.forEach((wMon, i) => {
-        const wSun = new Date(wMon);
-        wSun.setDate(wSun.getDate() + 6);
-        if (as && af && !(af < wMon || as > wSun)) coveredAct.push(i);
-        else if (as && !af && wMon >= as && wMon <= new Date()) coveredAct.push(i);
-      });
-      const actWeight = actPct * w;
-      if (coveredAct.length > 0) {
-        const inc = actWeight / coveredAct.length;
-        coveredAct.forEach(i => weeklyAct[i] += inc);
-      }
-    }
-  });
-
-  const planCum = [];
-  const actCum = [];
-  let cumP = 0;
-  let cumA = 0;
-  for (let i = 0; i < numWeeks; i++) {
-    cumP += weeklyPlan[i] * 100;
-    cumA += weeklyAct[i] * 100;
-    planCum.push(Math.round(Math.min(100, cumP) * 10) / 10);
-    actCum.push(Math.round(Math.min(100, cumA) * 10) / 10);
-  }
-
-  return {
-    labels: labels,
-    planned_cum: planCum,
-    actual_cum: actCum,
-    planned_weekly: weeklyPlan.map(v => Math.round(v * 1000) / 10),
-    actual_weekly: weeklyAct.map(v => Math.round(v * 1000) / 10)
-  };
-}
-
 function renderProjectScurve(scurveData) {
-  if (!scurveData || !scurveData.labels || scurveData.labels.length === 0) return;
-  
-  const seriesData = [
-    {
-      name: 'Planned Cumulative S-Curve (%)',
-      type: 'line',
-      data: scurveData.planned_cum || []
-    },
-    {
-      name: 'Actual Cumulative S-Curve (%)',
-      type: 'line',
-      data: scurveData.actual_cum || []
-    },
-    {
-      name: 'Planned Weekly (%)',
-      type: 'column',
-      data: scurveData.planned_weekly || []
-    },
-    {
-      name: 'Actual Weekly (%)',
-      type: 'column',
-      data: scurveData.actual_weekly || []
-    }
-  ];
-
-  // If chart already exists, update options/series smoothly in 1ms without recreating canvas
-  if (projectScurveChart) {
-    projectScurveChart.updateOptions({
-      xaxis: { categories: scurveData.labels },
-      series: seriesData
-    }, false, false);
-    return;
-  }
+  if (!scurveData || !scurveData.weeks || scurveData.weeks.length === 0) return;
   
   const options = {
-    series: seriesData,
+    series: [
+      {
+        name: 'Planned Cumulative S-Curve (%)',
+        type: 'line',
+        data: scurveData.planned_cum
+      },
+      {
+        name: 'Actual Cumulative S-Curve (%)',
+        type: 'line',
+        data: scurveData.actual_cum
+      },
+      {
+        name: 'Planned Weekly (%)',
+        type: 'column',
+        data: scurveData.planned_weekly
+      },
+      {
+        name: 'Actual Weekly (%)',
+        type: 'column',
+        data: scurveData.actual_weekly
+      }
+    ],
     chart: {
       height: '100%',
       type: 'line',
       stacked: false,
-      animations: { enabled: false }, // Instant rendering
       toolbar: {
         show: true,
         tools: { download: true, zoom: true, reset: true }
@@ -718,6 +522,7 @@ function renderProjectScurve(scurveData) {
   
   const chartEl = document.getElementById('project-scurve-chart');
   if (chartEl) {
+    if (projectScurveChart) projectScurveChart.destroy();
     projectScurveChart = new ApexCharts(chartEl, options);
     projectScurveChart.render();
   }
@@ -725,13 +530,13 @@ function renderProjectScurve(scurveData) {
 
 function renderMilestonesTable(milestones) {
   const tbody = document.getElementById('milestones-table-body');
-  if (!tbody) return;
+  tbody.innerHTML = '';
+  document.getElementById('milestones-count-label').innerText = `${milestones.length} งานทั้งหมด`;
   
-  const labelEl = document.getElementById('milestones-count-label');
-  if (labelEl) labelEl.innerText = `${milestones.length} งานทั้งหมด`;
-  
-  let html = '';
   milestones.forEach((m, idx) => {
+    const tr = document.createElement('tr');
+    tr.className = 'hover:bg-slate-50 transition';
+    
     const pctVal = Math.round(m.actual_pct * 100);
     const weightPct = (m.weight * 100).toFixed(1) + '%';
     const contribPct = (m.actual_contribution * 100).toFixed(2) + '%';
@@ -745,49 +550,46 @@ function renderMilestonesTable(milestones) {
       statusBadge = '<span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold">รอดำเนินการ</span>';
     }
     
-    const cat = m.category || (idx < 9 ? 'งานราชการ' : (idx < 12 ? 'ออกแบบ' : 'ก่อสร้าง'));
     let catBadge = '';
-    if (cat.includes('ราชการ') || cat.includes('Permission')) {
+    if (m.category.includes('Permission')) {
       catBadge = '<span class="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">งานราชการ</span>';
-    } else if (cat.includes('ออกแบบ') || cat.includes('Engineering')) {
+    } else if (m.category.includes('Engineering')) {
       catBadge = '<span class="text-[10px] text-cyan-600 bg-cyan-50 px-2 py-0.5 rounded">ออกแบบ</span>';
     } else {
       catBadge = '<span class="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded">ก่อสร้าง</span>';
     }
     
-    html += `
-      <tr class="hover:bg-slate-50 transition">
-        <td class="py-3 px-4 font-medium text-slate-900">${m.name}</td>
-        <td class="py-3 px-3">${catBadge}</td>
-        <td class="py-3 px-3 text-center font-mono font-semibold text-slate-700">${weightPct}</td>
-        <td class="py-3 px-3 text-slate-500 font-mono">${m.planned_start || '-'} <br><span class="text-slate-400">ถึง</span> ${m.planned_finish || '-'}</td>
-        <td class="py-3 px-3 text-slate-700 font-mono">${m.actual_start || '-'} <br><span class="text-slate-400">ถึง</span> ${(pctVal >= 100 && m.actual_finish) ? m.actual_finish : '-'}</td>
-        <td class="py-3 px-4">
-          <div class="flex items-center space-x-2">
-            <div class="w-20 bg-slate-100 rounded-full h-2 overflow-hidden">
-              <div class="bg-amber-500 h-2 rounded-full" style="width: ${pctVal}%"></div>
-            </div>
-            <span class="font-bold text-slate-800 w-8 text-right">${pctVal}%</span>
+    tr.innerHTML = `
+      <td class="py-3 px-4 font-medium text-slate-900">${m.name}</td>
+      <td class="py-3 px-3">${catBadge}</td>
+      <td class="py-3 px-3 text-center font-mono font-semibold text-slate-700">${weightPct}</td>
+      <td class="py-3 px-3 text-slate-500 font-mono">${m.planned_start || '-'} <br><span class="text-slate-400">ถึง</span> ${m.planned_finish || '-'}</td>
+      <td class="py-3 px-3 text-slate-700 font-mono">${m.actual_start || '-'} <br><span class="text-slate-400">ถึง</span> ${(pctVal >= 100 && m.actual_finish) ? m.actual_finish : '-'}</td>
+      <td class="py-3 px-4">
+        <div class="flex items-center space-x-2">
+          <div class="w-20 bg-slate-100 rounded-full h-2 overflow-hidden">
+            <div class="bg-amber-500 h-2 rounded-full" style="width: ${pctVal}%"></div>
           </div>
-        </td>
-        <td class="py-3 px-3 text-center font-mono font-semibold text-emerald-600">${contribPct}</td>
-        <td class="py-3 px-3 text-center">${statusBadge}</td>
-        <td class="py-3 px-3 text-center">
-          <button onclick="openQuickUpdateModal('${m.name}', ${pctVal}, '${m.actual_start || ''}', '${m.actual_finish || ''}')" class="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-amber-50" title="แก้ไข">
-            <i data-lucide="edit-2" class="w-4 h-4"></i>
-          </button>
-        </td>
-      </tr>
+          <span class="font-bold text-slate-800 w-8 text-right">${pctVal}%</span>
+        </div>
+      </td>
+      <td class="py-3 px-3 text-center font-mono font-semibold text-emerald-600">${contribPct}</td>
+      <td class="py-3 px-3 text-center">${statusBadge}</td>
+      <td class="py-3 px-3 text-center">
+        <button onclick="openQuickUpdateModal('${m.name}', ${pctVal}, '${m.actual_start || ''}', '${m.actual_finish || ''}')" class="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-amber-50" title="แก้ไข">
+          <i data-lucide="edit-2" class="w-4 h-4"></i>
+        </button>
+      </td>
     `;
+    tbody.appendChild(tr);
   });
-
-  tbody.innerHTML = html;
+  
   lucide.createIcons();
 }
 
 // =========================================================================
 // =========================================================================
-// TAB 3: MULTI-PROJECT COMPARISON & LOT DEEP DIVE ANALYTICS
+// TAB 3: MULTI-PROJECT COMPARISON & ANALYTICS
 // =========================================================================
 function renderComparisonTab() {
   if (!allProjects || allProjects.length === 0) return;
@@ -796,84 +598,31 @@ function renderComparisonTab() {
   const lotSel = document.getElementById('compare-lot-select');
   if (lotSel && globalOverview && globalOverview.lots) {
     const currentVal = lotSel.value;
-    lotSel.innerHTML = '<option value="ALL">แสดงทุกโครงการ (ทุกล็อต)</option>';
+    lotSel.innerHTML = '<option value="ALL">แสดงทุกโครงการ (Top 25 กำลังผลิต)</option>';
     globalOverview.lots.forEach(lot => {
-      lotSel.innerHTML += `<option value="${lot}">เฉพาะ ${lot}</option>`;
+      lotSel.innerHTML += `<option value="${lot}">${lot}</option>`;
     });
     if (currentVal) lotSel.value = currentVal;
   }
   
   const selectedLot = lotSel ? lotSel.value : 'ALL';
   
-  // 2. Filter Projects specifically for the Selected Lot
+  // 2. Filter Projects for Comparison
   let targetProjects = [];
   if (selectedLot === 'ALL') {
-    targetProjects = [...allProjects];
+    targetProjects = [...allProjects]
+      .sort((a, b) => b.capacity_kwp - a.capacity_kwp)
+      .slice(0, 25);
   } else {
     targetProjects = allProjects.filter(p => p.lot === selectedLot);
   }
-
-  // 3. Calculate Lot-specific Summary KPIs
-  const lotProjectCount = targetProjects.length;
-  const lotTotalCapacity = targetProjects.reduce((sum, p) => sum + (p.capacity_kwp || 0), 0);
-  const lotWeightedPlan = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.planned_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
-  const lotWeightedAct = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.actual_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
-  const lotVariance = lotWeightedAct - lotWeightedPlan;
-
-  const lotCompleted = targetProjects.filter(p => p.status === 'COMPLETED' || p.actual_progress_pct >= 100).length;
-  const lotDelayed = targetProjects.filter(p => p.variance_pct < -0.1 || p.status === 'DELAYED').length;
-  const lotOnTrack = lotProjectCount - lotCompleted - lotDelayed;
-
-  // Update Lot KPI Cards
-  const kpiCountEl = document.getElementById('lot-kpi-count');
-  if (kpiCountEl) kpiCountEl.innerText = lotProjectCount;
   
-  const kpiCapEl = document.getElementById('lot-kpi-capacity');
-  if (kpiCapEl) kpiCapEl.innerText = Number(lotTotalCapacity.toFixed(1)).toLocaleString();
+  const categories = targetProjects.map(p => p.name.length > 22 ? p.name.substring(0, 22) + '...' : p.name);
+  const plannedData = targetProjects.map(p => p.planned_progress_pct);
+  const actualData = targetProjects.map(p => p.actual_progress_pct);
   
-  const kpiActEl = document.getElementById('lot-kpi-actual');
-  if (kpiActEl) kpiActEl.innerText = lotWeightedAct.toFixed(1) + '%';
-  
-  const kpiPlanEl = document.getElementById('lot-kpi-planned');
-  if (kpiPlanEl) kpiPlanEl.innerText = '/ ' + lotWeightedPlan.toFixed(1) + '%';
-  
-  const kpiCompEl = document.getElementById('lot-kpi-completed');
-  if (kpiCompEl) kpiCompEl.innerText = `เสร็จ: ${lotCompleted}`;
-  
-  const kpiOnTrackEl = document.getElementById('lot-kpi-ontrack');
-  if (kpiOnTrackEl) kpiOnTrackEl.innerText = `ปกติ: ${lotOnTrack}`;
-  
-  const kpiDelEl = document.getElementById('lot-kpi-delayed');
-  if (kpiDelEl) kpiDelEl.innerText = `ช้า: ${lotDelayed}`;
-
-  const btnLotPdfText = document.getElementById('btn-lot-pdf-text');
-  if (btnLotPdfText) {
-    btnLotPdfText.innerText = selectedLot === 'ALL' ? 'พิมพ์รายงาน PDF ทุกล็อต' : `พิมพ์รายงาน PDF เฉพาะ ${selectedLot}`;
-  }
-
-  const chartLotTitle = document.getElementById('chart-lot-title');
-  if (chartLotTitle) {
-    chartLotTitle.innerText = selectedLot === 'ALL'
-      ? 'กราฟแท่งเปรียบเทียบความก้าวหน้าทุกล็อต (Top 25 ตามขนาดกำลังการผลิต)'
-      : `กราฟแท่งเปรียบเทียบความก้าวหน้ารายไซต์ใน ${selectedLot} (${lotProjectCount} ไซต์, รวม ${Number(lotTotalCapacity.toFixed(1)).toLocaleString()} kWp)`;
-  }
-  
-  // 4. Prepare Data for Bar Chart (Includes Installed Capacity kWp in Category)
-  const chartProjects = selectedLot === 'ALL' 
-    ? [...targetProjects].sort((a, b) => b.capacity_kwp - a.capacity_kwp).slice(0, 25) 
-    : targetProjects;
-
-  const categories = chartProjects.map(p => {
-    const capStr = `[${Number(p.capacity_kwp).toLocaleString()} kWp]`;
-    const shortName = p.name.length > 24 ? p.name.substring(0, 24) + '...' : p.name;
-    return `${shortName} ${capStr}`;
-  });
-
-  const plannedData = chartProjects.map(p => p.planned_progress_pct);
-  const actualData = chartProjects.map(p => p.actual_progress_pct);
-  
-  // 5. Render ApexCharts Horizontal Bar Comparison
-  const chartHeight = Math.max(380, chartProjects.length * 32);
+  // 3. Render ApexCharts Horizontal Bar Comparison
+  const chartHeight = Math.max(400, targetProjects.length * 28);
   const compOptions = {
     series: [
       {
@@ -902,7 +651,7 @@ function renderComparisonTab() {
     colors: ['#2563eb', '#10b981'],
     dataLabels: {
       enabled: true,
-      offsetX: 18,
+      offsetX: 16,
       style: { fontSize: '9px', colors: ['#334155'], fontWeight: 600 },
       formatter: val => val + '%'
     },
@@ -916,24 +665,11 @@ function renderComparisonTab() {
     yaxis: {
       labels: {
         style: { fontSize: '11px', fontWeight: 600, colors: '#0f172a' },
-        maxWidth: 240
+        maxWidth: 180
       }
     },
     tooltip: {
-      custom: function({series, seriesIndex, dataPointIndex, w}) {
-        const prj = chartProjects[dataPointIndex];
-        if (!prj) return '';
-        return `
-          <div class="p-3 bg-slate-900 text-white rounded-xl shadow-xl text-xs space-y-1">
-            <div class="font-bold text-amber-400 border-b border-slate-700 pb-1">${prj.name}</div>
-            <div>กำลังการผลิต: <span class="font-bold text-emerald-400">${Number(prj.capacity_kwp).toLocaleString()} kWp</span> (${prj.installation_type || 'Solar'})</div>
-            <div>กลุ่มธุรกิจ: <b>${prj.business_unit || '-'}</b> | Lot: <b>${prj.lot}</b></div>
-            <div class="text-blue-300">แผนงานสะสม: <b>${prj.planned_progress_pct}%</b></div>
-            <div class="text-emerald-300">ผลงานจริงสะสม: <b>${prj.actual_progress_pct}%</b></div>
-            <div>ผลต่าง (Variance): <b class="${prj.variance_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${prj.variance_pct >= 0 ? '+' : ''}${prj.variance_pct}%</b></div>
-          </div>
-        `;
-      }
+      y: { formatter: val => val + '%' }
     },
     legend: {
       position: 'top',
@@ -950,68 +686,37 @@ function renderComparisonTab() {
     comparisonBarChart.render();
   }
   
-  // 6. Render Sites Table specifically for the Selected Lot
-  const tableTitle = document.getElementById('comparison-table-title');
-  if (tableTitle) {
-    tableTitle.innerHTML = `<i data-lucide="table-2" class="w-5 h-5 text-emerald-700"></i> <span>${selectedLot === 'ALL' ? 'ตารางรายชื่อโครงการทั้งหมด (137 โครงการ)' : `ตารางรายชื่อไซต์งานใน ${selectedLot} (เฉพาะ Lot ที่เลือก)`}</span>`;
-  }
-  
-  const tableSubtitle = document.getElementById('comparison-table-subtitle');
-  if (tableSubtitle) {
-    tableSubtitle.innerText = selectedLot === 'ALL'
-      ? 'แสดงข้อมูลโครงการทั้งหมดในระบบ พร้อมกำลังการผลิต และความคืบหน้า'
-      : `แสดงเฉพาะ ${lotProjectCount} ไซต์ใน ${selectedLot} กำลังการผลิตรวม ${Number(lotTotalCapacity.toFixed(1)).toLocaleString()} kWp`;
-  }
-
-  const tableCount = document.getElementById('comparison-table-count');
-  if (tableCount) {
-    tableCount.innerText = `${lotProjectCount} โครงการ`;
-  }
-
-  const tbody = document.getElementById('comparison-table-body');
+  // 4. Render Delayed Projects Watchlist Table
+  const tbody = document.getElementById('delayed-table-body');
   if (tbody) {
     tbody.innerHTML = '';
-    if (targetProjects.length === 0) {
+    const delayedProjects = [...allProjects]
+      .filter(p => p.variance_pct < -0.1 || p.status === 'DELAYED')
+      .sort((a, b) => a.variance_pct - b.variance_pct);
+      
+    if (delayedProjects.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="10" class="text-center py-6 text-slate-400">
-            ไม่พบโครงการใน Lot นี้
+          <td colspan="8" class="text-center py-6 text-emerald-700 font-semibold">
+            🎉 ยอดเยี่ยมมาก! ไม่มีโครงการที่ล่าช้ากว่าแผนงานในขณะนี้
           </td>
         </tr>
       `;
     } else {
-      targetProjects.forEach((p, idx) => {
+      delayedProjects.forEach(p => {
         const tr = document.createElement('tr');
-        tr.className = 'hover:bg-slate-50 transition text-xs';
-        
-        let statusBadge = '';
-        if (p.status === 'COMPLETED' || p.actual_progress_pct >= 100) {
-          statusBadge = '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">เสร็จสมบูรณ์</span>';
-        } else if (p.status === 'DELAYED' || p.variance_pct < -0.1) {
-          statusBadge = `<span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-semibold">ล่าช้า ${p.variance_pct}%</span>`;
-        } else {
-          statusBadge = '<span class="px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-semibold">ตามแผนงาน</span>';
-        }
-
+        tr.className = 'hover:bg-rose-50/40 transition';
         tr.innerHTML = `
-          <td class="py-3 px-3 text-center text-slate-400 font-mono">${idx + 1}</td>
-          <td class="py-3 px-4 font-bold text-slate-900">
-            <div>${p.name}</div>
-            <div class="text-[10px] text-slate-400 font-normal">Order: ${p.order_no || '-'} | Lot: ${p.lot}</div>
-          </td>
-          <td class="py-3 px-3 text-slate-600">${p.business_unit || '-'}</td>
-          <td class="py-3 px-3"><span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px]">${p.installation_type || 'Solar'}</span></td>
-          <td class="py-3 px-3 text-right font-mono font-bold text-amber-700">${Number(p.capacity_kwp).toLocaleString()}</td>
+          <td class="py-3 px-4 font-bold text-slate-900">${p.name}</td>
+          <td class="py-3 px-3 text-slate-600">${p.business_unit}</td>
+          <td class="py-3 px-3"><span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold">${p.lot}</span></td>
+          <td class="py-3 px-3 font-mono font-medium">${p.capacity_kwp}</td>
           <td class="py-3 px-3 text-center font-mono text-blue-600 font-semibold">${p.planned_progress_pct}%</td>
-          <td class="py-3 px-3 text-center font-mono text-emerald-600 font-bold">${p.actual_progress_pct}%</td>
-          <td class="py-3 px-3 text-center font-mono font-bold ${p.variance_pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
-            ${p.variance_pct >= 0 ? '+' : ''}${p.variance_pct}%
-          </td>
-          <td class="py-3 px-3 text-center">${statusBadge}</td>
+          <td class="py-3 px-3 text-center font-mono text-emerald-600 font-semibold">${p.actual_progress_pct}%</td>
+          <td class="py-3 px-3 text-center font-mono font-bold text-rose-600">${p.variance_pct}%</td>
           <td class="py-3 px-3 text-center">
-            <button onclick="openProjectFromComparison('${p.id}')" class="px-2.5 py-1 rounded-lg bg-[#043327] hover:bg-[#064e3b] text-white text-[11px] font-semibold transition flex items-center gap-1 mx-auto">
-              <span>ดูโครงการ</span>
-              <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+            <button onclick="openProjectFromComparison('${p.id}')" class="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-semibold transition">
+              ดูโครงการ
             </button>
           </td>
         `;
@@ -1019,274 +724,11 @@ function renderComparisonTab() {
       });
     }
   }
-
-  lucide.createIcons();
 }
 
 function openProjectFromComparison(projectId) {
   selectProject(projectId);
   switchTab('project');
-}
-
-// =========================================================================
-// LOT-SPECIFIC PDF REPORT GENERATOR (Executive Lot Progress Report)
-// =========================================================================
-async function generateLotPDF() {
-  const lotSel = document.getElementById('compare-lot-select');
-  const selectedLot = lotSel ? lotSel.value : 'ALL';
-  
-  const targetProjects = selectedLot === 'ALL'
-    ? [...allProjects]
-    : allProjects.filter(p => p.lot === selectedLot);
-
-  if (targetProjects.length === 0) {
-    showToast('ไม่พบข้อมูลโครงการใน Lot ที่เลือก', 'error');
-    return;
-  }
-
-  const btn = document.getElementById('btn-gen-lot-pdf');
-  const originalHtml = btn ? btn.innerHTML : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = `<span class="animate-spin mr-1">⏳</span> กำลังสร้าง PDF เฉพาะ ${selectedLot}...`;
-  }
-
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
-  const lotProjectCount = targetProjects.length;
-  const lotTotalCapacity = targetProjects.reduce((sum, p) => sum + (p.capacity_kwp || 0), 0);
-  const lotWeightedPlan = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.planned_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
-  const lotWeightedAct = lotTotalCapacity > 0 ? (targetProjects.reduce((sum, p) => sum + (p.actual_progress_pct * p.capacity_kwp), 0) / lotTotalCapacity) : 0;
-  const lotVariance = lotWeightedAct - lotWeightedPlan;
-  const lotCompleted = targetProjects.filter(p => p.status === 'COMPLETED' || p.actual_progress_pct >= 100).length;
-  const lotDelayed = targetProjects.filter(p => p.variance_pct < -0.1 || p.status === 'DELAYED').length;
-  const lotOnTrack = lotProjectCount - lotCompleted - lotDelayed;
-
-  // 1. Capture Comparison Chart Image
-  let chartImgUri = '';
-  try {
-    if (comparisonBarChart && typeof comparisonBarChart.dataURI === 'function') {
-      const res = await comparisonBarChart.dataURI();
-      chartImgUri = res.imgURI || '';
-    }
-  } catch (e) {
-    console.warn("Could not capture chart as image:", e);
-  }
-
-  // 2. Build Site Table Rows for PDF
-  let tableRows = '';
-  targetProjects.forEach((p, idx) => {
-    const bgRow = (idx % 2 === 1) ? '#f8fafc' : '#ffffff';
-    let statusText = 'ตามแผนงาน';
-    let statusColor = '#1e40af';
-    let statusBg = '#dbeafe';
-    if (p.status === 'COMPLETED' || p.actual_progress_pct >= 100) {
-      statusText = 'เสร็จสมบูรณ์';
-      statusColor = '#065f46';
-      statusBg = '#d1fae5';
-    } else if (p.status === 'DELAYED' || p.variance_pct < -0.1) {
-      statusText = `ล่าช้า ${p.variance_pct}%`;
-      statusColor = '#9f1239';
-      statusBg = '#ffe4e6';
-    }
-
-    tableRows += `
-      <tr style="background: ${bgRow}; border-bottom: 1px solid #cbd5e1; font-size: 8px; line-height: 1.15;">
-        <td style="padding: 4px; text-align: center; color: #64748b; font-weight: 600; width: 4%;">${idx + 1}</td>
-        <td style="padding: 4px 6px; font-weight: 700; color: #0f172a; width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p.name}</td>
-        <td style="padding: 4px; text-align: center; color: #475569; width: 14%;">${p.business_unit || '-'}</td>
-        <td style="padding: 4px; text-align: center; color: #475569; width: 12%;">${p.installation_type || 'Solar'}</td>
-        <td style="padding: 4px 6px; text-align: right; font-weight: 700; color: #b45309; font-family: monospace; width: 12%;">${Number(p.capacity_kwp).toLocaleString()}</td>
-        <td style="padding: 4px; text-align: center; color: #2563eb; font-weight: 600; width: 8%;">${p.planned_progress_pct}%</td>
-        <td style="padding: 4px; text-align: center; color: #059669; font-weight: 700; width: 8%;">${p.actual_progress_pct}%</td>
-        <td style="padding: 4px; text-align: center; font-weight: 700; color: ${p.variance_pct >= 0 ? '#059669' : '#e11d48'}; width: 8%;">
-          ${p.variance_pct >= 0 ? '+' : ''}${p.variance_pct}%
-        </td>
-      </tr>
-    `;
-  });
-
-  // 3. Construct Printable HTML (Exact 210mm x 297mm A4)
-  const reportContainer = document.getElementById('printable-report');
-  reportContainer.innerHTML = `
-    <div id="pdf-lot-root" style="width: 210mm; margin: 0; padding: 0; background: #ffffff; color: #0f172a; font-family: 'Prompt', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; box-sizing: border-box;">
-      
-      <!-- PAGE 1: LOT EXECUTIVE OVERVIEW -->
-      <div style="width: 210mm; height: 295mm; max-height: 295mm; padding: 8mm 10mm; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; background: #ffffff; overflow: hidden;">
-        <div>
-          <!-- Header Bar -->
-          <div style="background: #043327; color: #ffffff; border-radius: 6px; padding: 8px 14px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <div style="background: #f59e0b; width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px;">⚡</div>
-              <div>
-                <h1 style="font-size: 16px; font-weight: 800; margin: 0; color: #ffffff;">KPGreenergy Planner</h1>
-                <p style="font-size: 9px; color: #a7f3d0; margin: 1px 0 0 0;">รายงานความก้าวหน้ากลุ่มโครงการราย Lot (Executive Lot Progress Report)</p>
-              </div>
-            </div>
-            <div style="text-align: right; font-size: 9px; color: #e2e8f0;">
-              <div>วันที่ออกรายงาน: <strong style="color: #ffffff;">${dateStr}</strong></div>
-              <div style="margin-top: 1px;">กลุ่มที่เลือก: <strong style="color: #fef08a;">${selectedLot === 'ALL' ? 'ทุกล็อต / ทุกโครงการ' : selectedLot}</strong></div>
-            </div>
-          </div>
-
-          <!-- Lot Identity & KPI Cards -->
-          <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; margin-bottom: 6px;">
-              <div>
-                <span style="font-size: 8px; text-transform: uppercase; font-weight: 700; color: #64748b;">กลุ่มโครงการที่เลือก (Selected Lot / Phase)</span>
-                <h2 style="font-size: 15px; font-weight: 800; margin: 1px 0 0 0; color: #043327;">${selectedLot === 'ALL' ? 'ภาพรวมทุกล็อต (All 137 Solar Projects)' : selectedLot}</h2>
-              </div>
-              <div style="text-align: right;">
-                <span style="background: #d1fae5; color: #065f46; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: 700;">
-                  เสร็จสิ้น ${lotCompleted} / ${lotProjectCount} โครงการ
-                </span>
-              </div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 9px;">
-              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
-                <span style="color: #64748b; font-size: 8px;">จำนวนไซต์ใน Lot:</span><br>
-                <strong style="color: #0f172a; font-size: 12px;">${lotProjectCount} โครงการ</strong>
-              </div>
-              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
-                <span style="color: #64748b; font-size: 8px;">กำลังการผลิตรวม:</span><br>
-                <strong style="color: #b45309; font-size: 12px;">${Number(lotTotalCapacity.toFixed(1)).toLocaleString()} kWp</strong>
-              </div>
-              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
-                <span style="color: #64748b; font-size: 8px;">ผลงานจริงเฉลี่ย (Weighted):</span><br>
-                <strong style="color: #059669; font-size: 12px;">${lotWeightedAct.toFixed(1)}%</strong>
-              </div>
-              <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px;">
-                <span style="color: #64748b; font-size: 8px;">แผนงานเฉลี่ย (Weighted):</span><br>
-                <strong style="color: #2563eb; font-size: 12px;">${lotWeightedPlan.toFixed(1)}%</strong>
-              </div>
-            </div>
-          </div>
-
-          <!-- Comparison Bar Chart Section -->
-          <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <h3 style="font-size: 10px; font-weight: 700; color: #043327; margin: 0;">กราฟแท่งเปรียบเทียบ % Plan vs % Actual รายไซต์ (พร้อมกำลังการผลิต kWp)</h3>
-              <span style="font-size: 7.5px; color: #64748b;">■ สีน้ำเงิน: แผนงาน | ■ สีเขียว: ผลงานจริง</span>
-            </div>
-            <div style="text-align: center;">
-              ${chartImgUri ? `<img src="${chartImgUri}" style="width: 100%; max-height: 125mm; object-fit: contain; margin: 0 auto;" />` : '<div style="padding: 40px; color: #94a3b8; font-size: 10px;">(กราฟเปรียบเทียบความก้าวหน้ารายไซต์)</div>'}
-            </div>
-          </div>
-
-          <!-- Summary Sites Table (First Batch) -->
-          <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden;">
-            <table style="width: 100%; border-collapse: collapse;">
-              <thead>
-                <tr style="background: #043327; color: #ffffff; font-size: 8px; text-transform: uppercase;">
-                  <th style="padding: 4px; text-align: center; width: 4%;">#</th>
-                  <th style="padding: 4px 6px; text-align: left; width: 34%;">ชื่อไซต์งาน</th>
-                  <th style="padding: 4px; text-align: center; width: 14%;">กลุ่มธุรกิจ</th>
-                  <th style="padding: 4px; text-align: center; width: 12%;">ประเภทติดตั้ง</th>
-                  <th style="padding: 4px 6px; text-align: right; width: 12%;">กำลังผลิต (kWp)</th>
-                  <th style="padding: 4px; text-align: center; width: 8%;">แผนงาน</th>
-                  <th style="padding: 4px; text-align: center; width: 8%;">ผลงานจริง</th>
-                  <th style="padding: 4px; text-align: center; width: 8%;">ผลต่าง</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${tableRows}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Footer -->
-        <div style="border-top: 1px solid #cbd5e1; padding-top: 5px; margin-top: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 7.5px; color: #64748b;">
-          <span>⚡ เอกสารรายงานความก้าวหน้าโครงการ KPGreenergy (จัดทำเฉพาะ ${selectedLot})</span>
-          <span>หน้า 1 / 1 (Executive Summary)</span>
-        </div>
-      </div>
-
-    </div>
-  `;
-
-  // 4. Generate PDF via html2pdf
-  const opt = {
-    margin: 0,
-    filename: `KPGreenergy_Report_${selectedLot.replace(/\s+/g, '_')}_${now.toISOString().slice(0,10)}.pdf`,
-    image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false },
-    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-  };
-
-  try {
-    const element = document.getElementById('pdf-lot-root');
-    await html2pdf().set(opt).from(element).save();
-    showToast(`สร้างรายงาน PDF เฉพาะ ${selectedLot} สำเร็จเรียบร้อย!`);
-  } catch (err) {
-    console.error("PDF generation failed:", err);
-    showToast("เกิดข้อผิดพลาดในการสร้าง PDF: " + err.message, "error");
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = originalHtml;
-      lucide.createIcons();
-    }
-  }
-}
-
-// =========================================================================
-// EXPORT CSV FOR SELECTED LOT ONLY
-// =========================================================================
-function exportLotCSV() {
-  const lotSel = document.getElementById('compare-lot-select');
-  const selectedLot = lotSel ? lotSel.value : 'ALL';
-  
-  const targetProjects = selectedLot === 'ALL'
-    ? [...allProjects]
-    : allProjects.filter(p => p.lot === selectedLot);
-
-  if (targetProjects.length === 0) {
-    showToast('ไม่พบข้อมูลโครงการใน Lot ที่เลือก', 'error');
-    return;
-  }
-
-  const headers = [
-    "No", "Project_Name", "Order_No", "Lot", "Business_Unit", "Type_Code",
-    "Installation_Type", "Capacity_kWp", "Planned_Progress_Pct", "Actual_Progress_Pct",
-    "Variance_Pct", "Status", "Planned_Start", "Planned_Finish", "Actual_Start", "Actual_Finish"
-  ];
-
-  let csvContent = "\ufeff" + headers.join(",") + "\n";
-
-  targetProjects.forEach((p, idx) => {
-    const row = [
-      idx + 1,
-      `"${(p.name || '').replace(/"/g, '""')}"`,
-      `"${p.order_no || ''}"`,
-      `"${p.lot || ''}"`,
-      `"${p.business_unit || ''}"`,
-      `"${p.type_code || ''}"`,
-      `"${p.installation_type || ''}"`,
-      p.capacity_kwp || 0,
-      p.planned_progress_pct || 0,
-      p.actual_progress_pct || 0,
-      p.variance_pct || 0,
-      `"${p.status_th || p.status || ''}"`,
-      `"${p.planned_start || ''}"`,
-      `"${p.planned_finish || ''}"`,
-      `"${p.actual_start || ''}"`,
-      `"${p.actual_finish || ''}"`
-    ];
-    csvContent += row.join(",") + "\n";
-  });
-
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `KPGreenergy_Export_${selectedLot.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-
-  showToast(`ส่งออกไฟล์ CSV เฉพาะ ${selectedLot} สำเร็จเรียบร้อย!`);
 }
 
 
@@ -1651,9 +1093,8 @@ async function handleModalSubmit(e) {
   const startD = document.getElementById('modal-start-date').value;
   const finishD = document.getElementById('modal-finish-date').value;
   const pwdInput = document.getElementById('modal-editor-password');
-  const pwd = pwdInput ? pwdInput.value.trim() : (sessionStorage.getItem('kpg_auth_pwd') || '');
-  const DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec";
-  const savedSheetUrl = DEFAULT_WEBAPP_URL;
+  const pwd = pwdInput ? pwdInput.value.trim() : '';
+  const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || localStorage.getItem('kpgreenergy_gsheet_url') || '';
   
   if (!pwd) {
     showToast('กรุณาใส่รหัสผ่าน KPGEditor เพื่อบันทึกข้อมูล', 'error');
@@ -1692,12 +1133,9 @@ async function handleModalSubmit(e) {
     // Remember password in session
     sessionStorage.setItem('kpg_auth_pwd', pwd);
     
-    // Refresh UI instantly in memory
-    const targetPrjId = currentProject ? currentProject.id : null;
+    // Refresh UI
     await loadInitialData();
-    if (targetPrjId) {
-      selectProject(targetPrjId);
-    }
+    await selectProject(currentProject.id);
     
   } catch (err) {
     console.error(err);
@@ -1710,78 +1148,11 @@ async function handleModalSubmit(e) {
 }
 
 // =========================================================================
-// REAL-TIME AUTO-SYNC BACKGROUND WORKER (No F5 required)
-// =========================================================================
-let currentLiveVersion = 0;
-let isLiveSyncing = false;
-
-async function silentRefreshData() {
-  try {
-    const [ovRes, prRes] = await Promise.all([
-      fetch('/api/overview'),
-      fetch('/api/projects')
-    ]);
-    
-    if (ovRes.ok && prRes.ok) {
-      globalOverview = await ovRes.json();
-      const pData = await prRes.json();
-      allProjects = pData.projects || [];
-      
-      renderKPIs();
-      renderPhaseOverviewTab();
-      renderComparisonTab();
-      
-      if (currentProject) {
-        const updated = allProjects.find(p => p.id === currentProject.id);
-        if (updated) {
-          currentProject = updated;
-          renderProjectDetail();
-        }
-      }
-    }
-  } catch (e) {
-    console.warn("Silent refresh notice:", e);
-  }
-}
-
-async function checkLiveUpdates() {
-  if (isLiveSyncing) return;
-  try {
-    const res = await fetch('/api/live-sync-status');
-    if (!res.ok) return;
-    const data = await res.json();
-    
-    if (currentLiveVersion === 0) {
-      currentLiveVersion = data.version;
-      if (data.version > 1) {
-        isLiveSyncing = true;
-        await silentRefreshData();
-      }
-      return;
-    }
-    
-    if (data.version > currentLiveVersion) {
-      isLiveSyncing = true;
-      currentLiveVersion = data.version;
-      await silentRefreshData();
-    }
-  } catch (e) {
-    // Quiet offline
-  } finally {
-    isLiveSyncing = false;
-  }
-}
-
-// Start polling live status every 2.5 seconds
-setInterval(checkLiveUpdates, 2500);
-
-// =========================================================================
 // TAB 5: INTEGRATION & SIMULATOR
 // =========================================================================
 function populateSimulatorDropdowns() {
   const simPrj = document.getElementById('sim-project-select');
   const simM = document.getElementById('sim-milestone-select');
-  if (!simPrj || !simM) return;
   
   simPrj.innerHTML = '';
   allProjects.forEach(p => {
@@ -1902,23 +1273,24 @@ async function saveAndSyncGoogleSheet() {
   }
 }
 
-// On page load, populate saved Google Sheet URL if any
+// On page load, populate saved Google Sheet URL & sync active Web App URL
 document.addEventListener('DOMContentLoaded', () => {
   const savedUrl = localStorage.getItem('kpgreenergy_gsheet_url');
-  const savedWebAppUrl = localStorage.getItem('kpgreenergy_webapp_url');
   const webappInput = document.getElementById('webapp-url-input');
-  if (savedWebAppUrl && webappInput) {
-    webappInput.value = savedWebAppUrl;
-  } else {
-    fetch('/api/get-webapp-url').then(r => r.json()).then(d => {
-      if (d.webapp_url && webappInput) webappInput.value = d.webapp_url;
-    }).catch(e => {});
-  }
+  
+  fetch('/api/get-webapp-url').then(r => r.json()).then(d => {
+    if (d.webapp_url) {
+      if (webappInput) webappInput.value = d.webapp_url;
+      localStorage.setItem('kpgreenergy_webapp_url', d.webapp_url);
+    }
+  }).catch(e => {});
+  
   const inputEl = document.getElementById('gsheet-url-input');
   if (savedUrl && inputEl) {
     inputEl.value = savedUrl;
   }
 });
+
 
 
 // Save Web App URL for 2-Way Writing globally on Server and LocalStorage
@@ -1943,326 +1315,4 @@ async function saveWebAppUrl() {
   } catch (err) {
     showToast('บันทึกบนเซิร์ฟเวอร์สำเร็จ (Local)');
   }
-}
-
-// =========================================================================
-// ACTIVITY AUDIT LOGS MODULE
-// =========================================================================
-let currentActivityLogs = [];
-
-async function loadActivityLogs() {
-  try {
-    const res = await fetch('/api/activity-logs?limit=50');
-    const data = await res.json();
-    currentActivityLogs = data.logs || [];
-    renderActivityLogsTable(currentActivityLogs);
-  } catch (err) {
-    console.warn("Could not fetch activity logs:", err);
-  }
-}
-
-function renderActivityLogsTable(logs) {
-  const tab5Tbody = document.getElementById('tab5-activity-logs-body');
-  const modalTbody = document.getElementById('modal-activity-logs-body');
-
-  let rowsHtml = '';
-  if (!logs || logs.length === 0) {
-    rowsHtml = `
-      <tr>
-        <td colspan="6" class="text-center py-6 text-slate-400 text-xs">
-          ยังไม่มีประวัติการแก้ไขข้อมูล (จะบันทึกอัตโนมัติเมื่อมีการอัปเดตงาน)
-        </td>
-      </tr>
-    `;
-  } else {
-    logs.forEach(log => {
-      let sourceBadge = '';
-      if (log.source === 'LINE LIFF') {
-        sourceBadge = '<span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">LINE</span>';
-      } else if (log.source === 'Google Sheet') {
-        sourceBadge = '<span class="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-semibold">Sheets</span>';
-      } else if (log.source === 'Webhook') {
-        sourceBadge = '<span class="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[10px] font-semibold">Webhook</span>';
-      } else {
-        sourceBadge = '<span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10px] font-semibold">Web</span>';
-      }
-
-      rowsHtml += `
-        <tr class="hover:bg-slate-50 transition text-[11px]">
-          <td class="py-2.5 px-3 font-mono text-slate-500">${log.timestamp || '-'}</td>
-          <td class="py-2.5 px-3 font-semibold text-slate-800">${log.project_name || log.project_id}</td>
-          <td class="py-2.5 px-3 text-slate-700">${log.milestone_name}</td>
-          <td class="py-2.5 px-2 text-center font-bold text-emerald-600">${log.actual_pct}%</td>
-          <td class="py-2.5 px-3 text-slate-600">${log.updated_by}</td>
-          <td class="py-2.5 px-2 text-center">${sourceBadge}</td>
-        </tr>
-      `;
-    });
-  }
-
-  if (tab5Tbody) tab5Tbody.innerHTML = rowsHtml;
-  if (modalTbody) modalTbody.innerHTML = rowsHtml;
-}
-
-function openActivityLogModal() {
-  loadActivityLogs();
-  const modal = document.getElementById('activity-log-modal');
-  if (modal) modal.classList.remove('hidden');
-  lucide.createIcons();
-}
-
-function closeActivityLogModal() {
-  const modal = document.getElementById('activity-log-modal');
-  if (modal) modal.classList.add('hidden');
-}
-
-// =========================================================================
-// BACKUP SNAPSHOTS MODULE
-// =========================================================================
-async function loadBackupList() {
-  try {
-    const res = await fetch('/api/backups');
-    const data = await res.json();
-    const backups = data.backups || [];
-    const container = document.getElementById('backups-list-container');
-    if (!container) return;
-
-    if (backups.length === 0) {
-      container.innerHTML = `<p class="text-[11px] text-slate-400">ยังไม่มี Snapshot สำรองข้อมูล</p>`;
-      return;
-    }
-
-    let html = '';
-    backups.slice(0, 4).forEach(b => {
-      html += `
-        <div class="p-2 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between text-[11px]">
-          <div class="flex items-center gap-2">
-            <i data-lucide="file-check-2" class="w-3.5 h-3.5 text-indigo-600"></i>
-            <span class="font-mono font-medium text-slate-700">${b.filename}</span>
-          </div>
-          <span class="text-slate-400">${b.size_kb} KB</span>
-        </div>
-      `;
-    });
-    container.innerHTML = html;
-    lucide.createIcons();
-  } catch (err) {
-    console.warn("Could not load backup list:", err);
-  }
-}
-
-async function triggerManualBackup() {
-  const btn = document.getElementById('btn-create-backup');
-  const originalHtml = btn ? btn.innerHTML : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = `<span class="animate-spin mr-1">⏳</span> กำลังสร้าง Snapshot...`;
-  }
-
-  try {
-    const res = await fetch('/api/backups', { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) {
-      showToast(data.message || 'สร้าง Snapshot สำรองข้อมูลสำเร็จแล้ว!');
-      await loadBackupList();
-    } else {
-      throw new Error(data.detail || 'Failed');
-    }
-  } catch (err) {
-    showToast('สร้าง Backup ล้มเหลว: ' + err.message, 'error');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = originalHtml;
-      lucide.createIcons();
-    }
-  }
-}
-
-// =========================================================================
-// LINE FLEX MESSAGE PREVIEW & COPY
-// =========================================================================
-let currentFlexPayload = null;
-
-async function loadLineFlexPreview(projectId = null) {
-  try {
-    const targetPrjId = projectId || (currentProject ? currentProject.id : '');
-    const res = await fetch(`/api/line-flex-preview?project_id=${targetPrjId}`);
-    const data = await res.json();
-    currentFlexPayload = data.flex_message;
-    const previewEl = document.getElementById('flex-json-preview');
-    if (previewEl) {
-      previewEl.innerText = JSON.stringify(currentFlexPayload, null, 2);
-    }
-  } catch (err) {
-    console.warn("Could not load Flex preview:", err);
-  }
-}
-
-async function copyLineFlexJson() {
-  if (!currentFlexPayload) return;
-  try {
-    await navigator.clipboard.writeText(JSON.stringify(currentFlexPayload, null, 2));
-    showToast('คัดลอก JSON Flex Message สำหรับ LINE สำเร็จแล้ว!');
-  } catch (err) {
-    showToast('คัดลอกไม่สำเร็จ: ' + err.message, 'error');
-  }
-}
-
-// =========================================================================
-// CCTV STREAMING & SNAPSHOT CONTROLLER
-// =========================================================================
-let currentCctvConfig = null;
-let hlsPlayers = {};
-
-function onCctvProjectChange() {
-  const prjId = document.getElementById('cctv-project-select').value;
-  reloadAllCctvCameras(prjId);
-}
-
-async function reloadAllCctvCameras(projectId = null) {
-  const prjId = projectId || document.getElementById('cctv-project-select')?.value || 'default';
-  
-  try {
-    const res = await fetch(`/api/cctv-config?project_id=${prjId}`);
-    currentCctvConfig = await res.json();
-    const cameras = currentCctvConfig.cameras || [];
-
-    cameras.forEach((cam, idx) => {
-      const camNum = idx + 1;
-      const videoEl = document.getElementById(`cctv-video-${camNum}`);
-      const placeholderEl = document.getElementById(`cctv-placeholder-${camNum}`);
-      const titleEl = document.getElementById(`cam-title-${camNum}`);
-
-      if (titleEl) titleEl.innerText = cam.name || `CAM 0${camNum}`;
-
-      if (cam.url && videoEl && placeholderEl) {
-        placeholderEl.classList.add('hidden');
-        videoEl.classList.remove('hidden');
-
-        if (Hls.isSupported() && cam.url.includes('.m3u8')) {
-          if (hlsPlayers[camNum]) {
-            hlsPlayers[camNum].destroy();
-          }
-          const hls = new Hls();
-          hls.loadSource(cam.url);
-          hls.attachMedia(videoEl);
-          hlsPlayers[camNum] = hls;
-        } else {
-          videoEl.src = cam.url;
-        }
-        videoEl.play().catch(e => console.log(`Autoplay prevented for CAM ${camNum}:`, e));
-      } else if (videoEl && placeholderEl) {
-        videoEl.classList.add('hidden');
-        placeholderEl.classList.remove('hidden');
-      }
-    });
-
-  } catch (err) {
-    console.warn("Error initializing CCTV streams:", err);
-  }
-}
-
-function openCctvConfigModal() {
-  const modal = document.getElementById('cctv-config-modal');
-  if (!modal) return;
-
-  if (currentCctvConfig && currentCctvConfig.cameras) {
-    currentCctvConfig.cameras.forEach((cam, idx) => {
-      const input = document.getElementById(`cfg-cam-${idx+1}`);
-      if (input) input.value = cam.url || '';
-    });
-  }
-
-  modal.classList.remove('hidden');
-  lucide.createIcons();
-}
-
-function closeCctvConfigModal() {
-  const modal = document.getElementById('cctv-config-modal');
-  if (modal) modal.classList.add('hidden');
-}
-
-async function handleCctvConfigSubmit(e) {
-  e.preventDefault();
-  const prjId = document.getElementById('cctv-project-select')?.value || 'default';
-  
-  const cameras = [
-    {"id": "cam_1", "name": "CAM 01 - Main Array", "url": document.getElementById('cfg-cam-1').value.trim(), "type": "hls", "status": "Online", "resolution": "1080p FHD"},
-    {"id": "cam_2", "name": "CAM 02 - Inverter Station", "url": document.getElementById('cfg-cam-2').value.trim(), "type": "hls", "status": "Online", "resolution": "1080p FHD"},
-    {"id": "cam_3", "name": "CAM 03 - Gate & Logistics", "url": document.getElementById('cfg-cam-3').value.trim(), "type": "hls", "status": "Online", "resolution": "1080p FHD"},
-    {"id": "cam_4", "name": "CAM 04 - PTZ Overview", "url": document.getElementById('cfg-cam-4').value.trim(), "type": "hls", "status": "Standby", "resolution": "4K UHD"}
-  ];
-
-  try {
-    const res = await fetch('/api/cctv-config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_id: prjId, cameras: cameras })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      closeCctvConfigModal();
-      showToast('บันทึกการตั้งค่ากล้อง CCTV เรียบร้อยแล้ว!');
-      await reloadAllCctvCameras(prjId);
-    } else {
-      throw new Error(data.detail || 'Save failed');
-    }
-  } catch (err) {
-    showToast('บันทึกไม่สำเร็จ: ' + err.message, 'error');
-  }
-}
-
-function captureCctvSnapshot(camNum) {
-  const video = document.getElementById(`cctv-video-${camNum}`);
-  const title = document.getElementById(`cam-title-${camNum}`)?.innerText || `CAM_0${camNum}`;
-  const now = new Date();
-  const dateStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const prjName = currentProject ? currentProject.name.replace(/\s+/g, '_') : 'KPGreenergy';
-
-  const canvas = document.createElement('canvas');
-  canvas.width = 1280;
-  canvas.height = 720;
-  const ctx = canvas.getContext('2d');
-
-  if (video && !video.classList.contains('hidden') && video.videoWidth > 0) {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  } else {
-    // Generate professional styled snapshot placeholder with project metadata
-    ctx.fillStyle = '#043327';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = '#064e3b';
-    ctx.fillRect(40, 40, canvas.width - 80, canvas.height - 80);
-
-    ctx.fillStyle = '#f59e0b';
-    ctx.font = 'bold 36px sans-serif';
-    ctx.fillText('⚡ KPGreenergy CCTV Snapshot', 70, 100);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillText(`โครงการ: ${currentProject ? currentProject.name : 'Solar Project'}`, 70, 160);
-
-    ctx.fillStyle = '#a7f3d0';
-    ctx.font = '22px sans-serif';
-    ctx.fillText(`กล้อง: ${title}`, 70, 210);
-    ctx.fillText(`วัน-เวลาที่บันทึก: ${now.toLocaleString('th-TH')}`, 70, 250);
-    ctx.fillText(`กำลังการผลิต: ${currentProject ? currentProject.capacity_kwp + ' kWp' : '-'}`, 70, 290);
-    ctx.fillText(`ความคืบหน้าจริง: ${currentProject ? currentProject.actual_progress_pct + '%' : '-'}`, 70, 330);
-  }
-
-  // Draw Timestamp Banner on Bottom
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-  ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
-  ctx.fillStyle = '#10b981';
-  ctx.font = 'bold 18px monospace';
-  ctx.fillText(`● REC | ${prjName} | ${title} | ${now.toLocaleString('th-TH')}`, 30, canvas.height - 20);
-
-  // Trigger Download
-  const link = document.createElement('a');
-  link.download = `Snapshot_${prjName}_CAM0${camNum}_${dateStr}.png`;
-  link.href = canvas.toDataURL('image/png');
-  link.click();
-
-  showToast(`บันทึกภาพ Snapshot ${title} เรียบร้อยแล้ว!`);
 }

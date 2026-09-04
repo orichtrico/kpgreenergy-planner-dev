@@ -1,53 +1,8 @@
 let liffProjects = [];
 let liffCurrentProject = null;
 
-// Offline Queue Helper
-function getOfflineQueue() {
-  try {
-    return JSON.parse(localStorage.getItem('kpg_liff_offline_queue') || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function saveOfflineQueue(queue) {
-  localStorage.setItem('kpg_liff_offline_queue', JSON.stringify(queue));
-  updateOfflineBanner();
-}
-
-function updateOfflineBanner() {
-  const banner = document.getElementById('liff-offline-banner');
-  const btn = document.getElementById('liff-sync-queue-btn');
-  const queue = getOfflineQueue();
-  const isOffline = !navigator.onLine;
-
-  if (!banner) return;
-
-  if (isOffline || queue.length > 0) {
-    banner.classList.remove('hidden');
-    if (queue.length > 0) {
-      banner.className = 'p-3 bg-amber-600 text-white rounded-2xl shadow-sm text-xs flex items-center justify-between';
-      banner.querySelector('span').innerText = `มีรายการรอซิงค์ ${queue.length} รายการ (${isOffline ? 'ออฟไลน์' : 'ออนไลน์'})`;
-      if (btn) btn.classList.remove('hidden');
-    } else {
-      banner.className = 'p-3 bg-slate-700 text-white rounded-2xl shadow-sm text-xs flex items-center justify-between';
-      banner.querySelector('span').innerText = `โหมดออฟไลน์: บันทึกข้อมูลลงเครื่องได้ตามปกติ`;
-      if (btn) btn.classList.add('hidden');
-    }
-  } else {
-    banner.classList.add('hidden');
-  }
-}
-
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
-  
-  window.addEventListener('online', () => {
-    updateOfflineBanner();
-    syncOfflineQueue();
-  });
-  window.addEventListener('offline', updateOfflineBanner);
-  updateOfflineBanner();
   
   // Set default dates
   const todayStr = new Date().toISOString().split('T')[0];
@@ -216,19 +171,6 @@ async function submitLiffForm() {
   const pwd = (pwdInput && pwdInput.value.trim()) ? pwdInput.value.trim() : 'KPGEditor';
   const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || localStorage.getItem('kpgreenergy_gsheet_url') || '';
   
-  const payload = {
-    project_id: liffCurrentProject.id,
-    project_name: liffCurrentProject.name,
-    milestone_name: mName,
-    actual_pct: pct,
-    actual_start: startDate,
-    actual_finish: finishDate,
-    note: note || 'อัปเดตผ่าน LINE LIFF',
-    updated_by: 'LINE LIFF User',
-    password: pwd,
-    sheet_url: savedSheetUrl
-  };
-
   const btn = document.getElementById('liff-submit-btn');
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
@@ -238,7 +180,17 @@ async function submitLiffForm() {
     const res = await fetch('/api/update-milestone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        project_id: liffCurrentProject.id,
+        milestone_name: mName,
+        actual_pct: pct,
+        actual_start: startDate,
+        actual_finish: finishDate,
+        note: note || 'อัปเดตผ่าน LINE LIFF',
+        updated_by: 'LINE LIFF User',
+        password: pwd,
+        sheet_url: savedSheetUrl
+      })
     });
     
     const data = await res.json();
@@ -251,20 +203,8 @@ async function submitLiffForm() {
     lucide.createIcons();
     
   } catch (err) {
-    console.warn("Network error or offline mode. Queueing update locally:", err);
-    
-    // Save to offline queue
-    const queue = getOfflineQueue();
-    queue.push({
-      ...payload,
-      queued_at: new Date().toISOString()
-    });
-    saveOfflineQueue(queue);
-
-    document.getElementById('liff-success-desc').innerText = `[โหมดออฟไลน์] บันทึก ${liffCurrentProject.name} -> ${mName} (${pct}%) ลงในเครื่องเรียบร้อยแล้ว! ระบบจะซิงค์ให้อัตโนมัติเมื่อต่ออินเทอร์เน็ต`;
-    document.getElementById('liff-success-modal').classList.remove('hidden');
-    lucide.createIcons();
-
+    console.error("LIFF submit error:", err);
+    alert("เกิดข้อผิดพลาดในการบันทึก: " + err.message);
   } finally {
     btn.disabled = false;
     btn.innerHTML = `<i data-lucide="check" class="w-5 h-5"></i> <span>บันทึกความคืบหน้าเข้าระบบ</span>`;
@@ -272,40 +212,7 @@ async function submitLiffForm() {
   }
 }
 
-async function syncOfflineQueue() {
-  const queue = getOfflineQueue();
-  if (queue.length === 0) return;
 
-  const btn = document.getElementById('liff-sync-queue-btn');
-  if (btn) btn.innerText = 'กำลังซิงค์...';
-
-  const remaining = [];
-  let successCount = 0;
-
-  for (const item of queue) {
-    try {
-      const res = await fetch('/api/update-milestone', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(item)
-      });
-      if (res.ok) {
-        successCount++;
-      } else {
-        remaining.push(item);
-      }
-    } catch {
-      remaining.push(item);
-    }
-  }
-
-  saveOfflineQueue(remaining);
-
-  if (successCount > 0) {
-    alert(`ซิงค์ข้อมูลออฟไลน์เข้าระบบสำเร็จแล้ว ${successCount} รายการ!`);
-    onLiffProjectChange();
-  }
-}
 
 function resetLiffForNext() {
   document.getElementById('liff-success-modal').classList.add('hidden');

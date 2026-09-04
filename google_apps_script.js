@@ -9,6 +9,8 @@ const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner-dev.onrender.com/api/
 
 /**
  * 1. onEdit Trigger: เมื่อคุณพิมพ์แก้ % ใน Google Sheet ระบบจะส่งข้อมูลไปอัปเดตหน้าเว็บทันที!
+ * แนะนำให้สร้าง Installable Trigger:
+ * เมนู ทริกเกอร์ (รูปนาฬิกา) > เพิ่มทริกเกอร์ > เลือก 'installedOnEdit' > จากสเปรดชีต > เมื่อแก้ไข (On edit)
  */
 function installedOnEdit(e) {
   try {
@@ -24,8 +26,8 @@ function installedOnEdit(e) {
 
       // ข้อมูลโครงการในชีต Progress เริ่มแถว 6, คอลัมน์ Milestone เริ่มที่ H (8)
       if (row >= 6 && col >= 8) {
-        const prjName = sheet.getRange(row, 4).getValue(); // Col D = ชื่อโครงการ
         const orderNo = sheet.getRange(row, 3).getValue(); // Col C = ลำดับ
+        const prjName = sheet.getRange(row, 4).getValue(); // Col D = ชื่อโครงการ
         
         const mIdx = Math.floor((col - 8) / 3);
         const headerCol = (mIdx * 3) + 8;
@@ -52,6 +54,14 @@ function installedOnEdit(e) {
   } catch (err) {
     console.error('installedOnEdit error: ' + err);
   }
+}
+
+/**
+ * Simple onEdit fallback
+ */
+function onEdit(e) {
+  // Simple onEdit triggers without OAuth permission to UrlFetchApp
+  // For external webhook, please use installedOnEdit via Triggers menu
 }
 
 /**
@@ -100,7 +110,7 @@ function doPost(e) {
 function handleUpdateMilestone(data) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const progSheet = ss.getSheetByName('Progress') || ss.getSheetByName('data Progress');
+    const progSheet = ss.getSheetByName('Progress') || ss.getSheetByName('data Progress') || ss.getActiveSheet();
 
     if (!progSheet) {
       return createJsonResponse({ status: 'error', message: 'ไม่พบชีต Progress' });
@@ -109,6 +119,7 @@ function handleUpdateMilestone(data) {
     const orderNo = String(data.order_no || '').trim();
     const projectName = String(data.project_name || '').trim().toLowerCase();
     const milestoneIdx = data.milestone_index !== undefined && data.milestone_index !== null ? parseInt(data.milestone_index) : -1;
+    const milestoneName = String(data.milestone_name || '').trim().toLowerCase();
     
     let actualPct = parseFloat(data.actual_pct || 0);
     if (actualPct > 1.0) actualPct = actualPct / 100.0;
@@ -117,7 +128,8 @@ function handleUpdateMilestone(data) {
     const actualFinish = data.actual_finish || '';
 
     // อ่านเฉพาะคอลัมน์ C (Order) และ D (Name) แถว 6 ถึง 145 (140 แถว) เพื่อความเร็วสูงสุด
-    const numRows = Math.min(145, progSheet.getLastRow() - 5);
+    const lastRow = Math.max(145, progSheet.getLastRow());
+    const numRows = Math.min(140, lastRow - 5);
     const rangeData = progSheet.getRange(6, 3, numRows, 2).getValues();
 
     let targetRow = -1;
@@ -125,11 +137,13 @@ function handleUpdateMilestone(data) {
       const rowOrder = String(rangeData[i][0] || '').trim();
       const rowName = String(rangeData[i][1] || '').trim().toLowerCase();
 
-      if (orderNo && rowOrder === orderNo) {
+      // 1. Match by Order No if available and not empty
+      if (orderNo && rowOrder && rowOrder === orderNo) {
         targetRow = i + 6;
         break;
       }
-      if (projectName && (rowName === projectName || rowName.includes(projectName) || projectName.includes(rowName))) {
+      // 2. Match by Project Name (Exact or substring)
+      if (projectName && rowName && (rowName === projectName || rowName.includes(projectName) || projectName.includes(rowName))) {
         targetRow = i + 6;
         break;
       }
@@ -143,8 +157,20 @@ function handleUpdateMilestone(data) {
     let targetCol = -1;
     if (milestoneIdx >= 0 && milestoneIdx < 33) {
       targetCol = 8 + (milestoneIdx * 3);
-    } else {
-      targetCol = 8; // fallback
+    } else if (milestoneName) {
+      // Find column from Row 3
+      const headerRow3 = progSheet.getRange(3, 8, 1, 99).getValues()[0];
+      for (let c = 0; c < headerRow3.length; c += 3) {
+        const title = String(headerRow3[c] || '').trim().toLowerCase();
+        if (title && (title === milestoneName || title.includes(milestoneName) || milestoneName.includes(title))) {
+          targetCol = 8 + c;
+          break;
+        }
+      }
+    }
+    
+    if (targetCol === -1) {
+      targetCol = 8; // fallback to Milestone 0
     }
 
     // เขียนค่าลงเซลล์ทันที
@@ -152,9 +178,16 @@ function handleUpdateMilestone(data) {
     if (actualFinish) progSheet.getRange(targetRow, targetCol + 1).setValue(actualFinish);
     progSheet.getRange(targetRow, targetCol + 2).setValue(actualPct);
 
+    // Optional Logging
+    const logSheet = ss.getSheetByName('Log_Updates');
+    if (logSheet) {
+      const nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+      logSheet.appendRow([nowStr, data.updated_by || 'Web App', data.project_name || '', data.milestone_name || '', (actualPct * 100).toFixed(0) + '%', actualStart, actualFinish, data.note || '2-Way API', 'Row ' + targetRow]);
+    }
+
     return createJsonResponse({
       status: 'success',
-      message: 'อัปเดต Row ' + targetRow + ' สำเร็จ (' + (actualPct * 100).toFixed(0) + '%)'
+      message: 'อัปเดต ' + (data.project_name || '') + ' (Row ' + targetRow + ') สำเร็จ (' + (actualPct * 100).toFixed(0) + '%)'
     });
 
   } catch (err) {
@@ -184,8 +217,8 @@ function createJsonResponse(data) {
 function testWebhook() {
   const payload = {
     action: 'sheet_edited',
-    project_name: 'CEE-2',
-    order_no: '200',
+    project_name: 'อสร.หนองจอก',
+    order_no: '',
     milestone_name: 'CPF ส่งมอบพื้นที่และยินยอมการใช้ที่ดิน ATV',
     milestone_index: 0,
     new_value: 1.0,

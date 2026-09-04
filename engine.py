@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 EXCEL_PATH = r'C:\Users\siray\Downloads\Weekly Progress R2.xlsx'
 CACHE_PATH = os.path.join(os.path.dirname(__file__), 'data_cache.json')
 BACKUP_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'data_cache_backup.json')
+DEFAULT_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec'
 
 def format_date(dt):
     if dt is None or dt == "-" or dt == "":
@@ -40,11 +41,6 @@ class ProjectEngine:
         self.excel_path = excel_path
         self.cache_path = cache_path
         self.backup_path = os.path.join(os.path.dirname(cache_path), 'data_cache_backup.json')
-        self.activity_log_path = os.path.join(os.path.dirname(cache_path), 'activity_logs.json')
-        self.cctv_config_path = os.path.join(os.path.dirname(cache_path), 'cctv_config.json')
-        self.backups_dir = os.path.join(os.path.dirname(cache_path), 'backups')
-        os.makedirs(self.backups_dir, exist_ok=True)
-        
         self.weight_matrix = {}
         self.milestone_names = []
         self.milestone_categories = {}
@@ -73,7 +69,7 @@ class ProjectEngine:
                         self.weight_matrix = {int(k): v for k, v in data.get('weight_matrix', {}).items()}
                         self.milestone_names = data.get('milestone_names', [])
                         self.milestone_categories = data.get('milestone_categories', {})
-                        self.google_sheet_webapp_url = data.get('google_sheet_webapp_url', '')
+                        self.google_sheet_webapp_url = data.get('google_sheet_webapp_url') or DEFAULT_WEBAPP_URL
                         self.projects = projects
                         self.projects_dict = {p['id']: p for p in self.projects}
                         print(f"[Fast Engine] Loaded {len(self.projects)} projects successfully from {os.path.basename(path)}.")
@@ -678,156 +674,3 @@ class ProjectEngine:
             
         self.save_to_cache()
         return updated_projects
-
-    def log_activity(self, project_id: str, project_name: str, milestone_name: str, 
-                     actual_pct: float, actual_start: Optional[str] = None, 
-                     actual_finish: Optional[str] = None, updated_by: str = "Web Editor", 
-                     note: str = "", source: str = "Web") -> Dict[str, Any]:
-        """
-        Records an audit activity log entry and saves atomically to activity_logs.json
-        """
-        logs = []
-        if os.path.exists(self.activity_log_path):
-            try:
-                with open(self.activity_log_path, 'r', encoding='utf-8') as f:
-                    logs = json.load(f)
-            except:
-                logs = []
-
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log_entry = {
-            "id": f"log_{datetime.now().strftime('%Y%m%d%H%M%S%f')[:17]}",
-            "timestamp": now_str,
-            "project_id": project_id,
-            "project_name": project_name,
-            "milestone_name": milestone_name,
-            "actual_pct": round(actual_pct * 100, 1),
-            "actual_start": actual_start or "-",
-            "actual_finish": actual_finish or "-",
-            "updated_by": updated_by or "Web Editor",
-            "note": note or "อัปเดตความก้าวหน้า",
-            "source": source
-        }
-
-        logs.insert(0, log_entry)
-        # Keep latest 1000 logs
-        logs = logs[:1000]
-
-        try:
-            tmp_path = self.activity_log_path + '.tmp'
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(logs, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self.activity_log_path)
-        except Exception as e:
-            print(f"[Engine] Failed to save activity logs: {e}")
-
-        return log_entry
-
-    def get_activity_logs(self, limit: int = 50, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        if not os.path.exists(self.activity_log_path):
-            return []
-        try:
-            with open(self.activity_log_path, 'r', encoding='utf-8') as f:
-                logs = json.load(f)
-            if project_id:
-                logs = [l for l in logs if l.get("project_id") == project_id]
-            return logs[:limit]
-        except Exception as e:
-            print(f"[Engine] Error reading activity logs: {e}")
-            return []
-
-    def get_cctv_config(self, project_id: Optional[str] = None) -> Dict[str, Any]:
-        default_config = {
-            "cameras": [
-                {"id": "cam_1", "name": "CAM 01 - พื้นที่ติดตั้งแผงโซลาร์เซลล์ (Main Array)", "url": "", "type": "hls", "status": "Online", "resolution": "1080p FHD (25 FPS)"},
-                {"id": "cam_2", "name": "CAM 02 - อาคารควบคุม Inverter Station & MDB", "url": "", "type": "hls", "status": "Online", "resolution": "1080p FHD (25 FPS)"},
-                {"id": "cam_3", "name": "CAM 03 - ประตูทางเข้า-ออกโครงการ & ขนส่งสินค้า", "url": "", "type": "hls", "status": "Online", "resolution": "1080p FHD (25 FPS)"},
-                {"id": "cam_4", "name": "CAM 04 - มุมสูงภาพรวมพื้นที่โครงการ (PTZ Overview)", "url": "", "type": "hls", "status": "Standby", "resolution": "4K UHD (30 FPS)"}
-            ]
-        }
-        if not os.path.exists(self.cctv_config_path):
-            return default_config
-        try:
-            with open(self.cctv_config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if project_id and project_id in data:
-                return data[project_id]
-            return data.get("default", default_config)
-        except:
-            return default_config
-
-    def save_cctv_config(self, project_id: str, cameras: List[Dict[str, Any]]) -> bool:
-        data = {}
-        if os.path.exists(self.cctv_config_path):
-            try:
-                with open(self.cctv_config_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except:
-                data = {}
-        key = project_id or "default"
-        data[key] = {"cameras": cameras}
-        try:
-            tmp_path = self.cctv_config_path + '.tmp'
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self.cctv_config_path)
-            return True
-        except Exception as e:
-            print(f"[Engine] Failed to save CCTV config: {e}")
-            return False
-
-    def create_backup_snapshot(self) -> str:
-        now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup_filename = f"data_cache_{now_str}.json"
-        target_path = os.path.join(self.backups_dir, backup_filename)
-        import shutil
-        if os.path.exists(self.cache_path):
-            shutil.copyfile(self.cache_path, target_path)
-            return backup_filename
-        return ""
-
-    def list_backups(self) -> List[Dict[str, Any]]:
-        backups = []
-        if os.path.exists(self.backups_dir):
-            for fname in sorted(os.listdir(self.backups_dir), reverse=True):
-                if fname.endswith('.json'):
-                    fpath = os.path.join(self.backups_dir, fname)
-                    stat = os.stat(fpath)
-                    backups.append({
-                        "filename": fname,
-                        "size_kb": round(stat.st_size / 1024, 1),
-                        "created_at": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-                    })
-        return backups
-
-    def generate_export_rows(self) -> List[Dict[str, Any]]:
-        rows = []
-        for p in self.projects:
-            row = {
-                "Project ID": p["id"],
-                "Business Unit": p["business_unit"],
-                "Order No": p.get("order_no", ""),
-                "Project Name": p["name"],
-                "Lot": p["lot"],
-                "Capacity (kWp)": p["capacity_kwp"],
-                "Installation Type": p["installation_type"],
-                "Status": p["status_th"],
-                "Planned Progress (%)": p["planned_progress_pct"],
-                "Actual Progress (%)": p["actual_progress_pct"],
-                "Variance (%)": p["variance_pct"],
-                "Planned Start": p.get("planned_start") or "",
-                "Planned Finish": p.get("planned_finish") or "",
-                "Actual Start": p.get("actual_start") or "",
-                "Actual Finish": p.get("actual_finish") or ""
-            }
-            # Append milestone progress
-            for m in p.get("milestones", []):
-                m_name = m["name"]
-                row[f"{m_name} (Weight %)"] = round(m["weight"] * 100, 1)
-                row[f"{m_name} (Actual %)"] = round(m["actual_pct"] * 100, 1)
-                row[f"{m_name} (Plan Start)"] = m.get("planned_start") or ""
-                row[f"{m_name} (Plan Finish)"] = m.get("planned_finish") or ""
-                row[f"{m_name} (Act Start)"] = m.get("actual_start") or ""
-                row[f"{m_name} (Act Finish)"] = (m.get("actual_finish") if m["actual_pct"] >= 1.0 else "") or ""
-            rows.append(row)
-        return rows
