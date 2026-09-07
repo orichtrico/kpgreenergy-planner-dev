@@ -65,8 +65,8 @@ async function refreshData() {
 async function loadInitialData() {
   try {
     const [overviewRes, projectsRes] = await Promise.all([
-      fetch('/api/overview'),
-      fetch('/api/projects')
+      fetch('/api/overview?t=' + Date.now(), { cache: 'no-store' }),
+      fetch('/api/projects?t=' + Date.now(), { cache: 'no-store' })
     ]);
     
     globalOverview = await overviewRes.json();
@@ -398,7 +398,7 @@ function onProjectSelect() {
 
 async function selectProject(projectId) {
   try {
-    const res = await fetch(`/api/projects/${projectId}`);
+    const res = await fetch(`/api/projects/${projectId}?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error("Project not found");
     currentProject = await res.json();
     renderProjectDetail();

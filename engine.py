@@ -23,16 +23,21 @@ def format_date(dt):
     return None
 
 def parse_date(d_str):
-    if not d_str or d_str == "-":
+    if not d_str or d_str in ("-", "", "None"):
         return None
     if isinstance(d_str, (datetime, date)):
         if isinstance(d_str, datetime):
             return d_str.date()
         return d_str
     if isinstance(d_str, str):
-        for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y', '%Y-%m-%d %H:%M:%S'):
+        clean_str = d_str.strip()
+        for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y', '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y', 
+                    '%d-%m-%Y', '%d-%m-%y', '%Y-%m-%d %H:%M:%S'):
             try:
-                return datetime.strptime(d_str.strip(), fmt).date()
+                res_date = datetime.strptime(clean_str, fmt).date()
+                if res_date.year > 2400:  # Buddhist era year (e.g. 2568 -> 2025)
+                    res_date = res_date.replace(year=res_date.year - 543)
+                return res_date
             except ValueError:
                 pass
     return None
@@ -646,13 +651,19 @@ class ProjectEngine:
         if not target_m:
             return False
             
+        if actual_pct == 0.0:
+            if actual_finish:
+                actual_pct = 1.0
+            elif actual_start:
+                actual_pct = 0.5
+                
         target_m["actual_pct"] = max(0.0, min(1.0, actual_pct))
         if actual_start:
             target_m["actual_start"] = actual_start
+            
+        # User Rule: If actual_pct < 100%, do not display/keep finish date
         if target_m["actual_pct"] >= 1.0:
             target_m["actual_finish"] = actual_finish or target_m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
-        elif actual_finish:
-            target_m["actual_finish"] = actual_finish
         else:
             target_m["actual_finish"] = None
             
@@ -812,8 +823,17 @@ class ProjectEngine:
                     if raw_finish and raw_finish != '-':
                         d = parse_date(raw_finish)
                         new_finish = d.strftime('%Y-%m-%d') if d else raw_finish
-                    elif pct_val >= 1.0:
-                        new_finish = m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
+
+                    # Auto-complete pct_val if user entered dates in sheet but left % empty
+                    if pct_val == 0.0:
+                        if new_finish:
+                            pct_val = 1.0
+                        elif new_start and not new_finish:
+                            pct_val = 0.5
+                            
+                    # User Rule: If pct_val < 100%, do not display/keep finish date
+                    if pct_val >= 1.0:
+                        new_finish = new_finish or m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
                     else:
                         new_finish = None
                         

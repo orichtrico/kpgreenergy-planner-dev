@@ -31,56 +31,76 @@ function installedOnEdit(e) {
     if (!e || !e.range) return;
     const sheet = e.range.getSheet();
     const sheetName = sheet.getName();
+    const sNameLower = sheetName.trim().toLowerCase();
     
-    // ตรวจสอบเฉพาะชีต Progress หรือ data Progress
-    if (sheetName === 'Progress' || sheetName === 'data Progress') {
-      const row = e.range.getRow();
-      const col = e.range.getColumn();
+    // ตรวจสอบเฉพาะชีต Progress
+    if (sNameLower.includes('progress')) {
+      const startRow = e.range.getRow();
+      const numRows = e.range.getNumRows();
+      const startCol = e.range.getColumn();
+      const numCols = e.range.getNumColumns();
+
+      const endRow = startRow + numRows - 1;
+      const endCol = startCol + numCols - 1;
 
       // ข้อมูลโครงการเริ่มแถว 6 เป็นต้นไป, คอลัมน์ Milestone เริ่มที่คอลัมน์ H (8) ถึง CR
-      if (row >= 6 && col >= 8) {
-        const orderNo = sheet.getRange(row, 3).getValue(); // Col C = ลำดับ (Order No)
-        const prjName = sheet.getRange(row, 4).getValue(); // Col D = ชื่อโครงการ (Project Name)
-        
-        // คำนวณลำดับ Milestone Index (0 ถึง 32)
-        const mIdx = Math.floor((col - 8) / 3);
-        const headerCol = (mIdx * 3) + 8;
-        const milestoneName = sheet.getRange(3, headerCol).getValue(); // แถว 3 = ชื่อ Milestone
+      if (endRow >= 6 && endCol >= 8) {
+        const effStartRow = Math.max(6, startRow);
+        const effStartMIdx = Math.max(0, Math.floor((startCol - 8) / 3));
+        const effEndMIdx = Math.min(32, Math.floor((endCol - 8) / 3));
 
-        // ดึงข้อมูลทั้ง 3 ช่องของ Milestone นี้ (Actual Start, Actual Finish, Actual %)
-        const rawStart = sheet.getRange(row, headerCol).getValue();
-        const rawFinish = sheet.getRange(row, headerCol + 1).getValue();
-        const rawPct = sheet.getRange(row, headerCol + 2).getValue();
-        
-        const actualStart = formatSheetDate(rawStart);
-        const actualFinish = formatSheetDate(rawFinish);
-        
-        let actualPct = 0;
-        if (typeof rawPct === 'number') {
-          actualPct = rawPct > 1.0 ? rawPct / 100.0 : rawPct;
-        } else if (rawPct) {
-          const cleanStr = String(rawPct).replace('%', '').trim();
-          const p = parseFloat(cleanStr);
-          if (!isNaN(p)) {
-            actualPct = p > 1.0 ? p / 100.0 : p;
+        for (let r = effStartRow; r <= endRow; r++) {
+          const orderNo = sheet.getRange(r, 3).getValue(); // Col C = ลำดับ (Order No)
+          const prjName = sheet.getRange(r, 4).getValue(); // Col D = ชื่อโครงการ (Project Name)
+          if (!prjName) continue;
+
+          for (let mIdx = effStartMIdx; mIdx <= effEndMIdx; mIdx++) {
+            const headerCol = (mIdx * 3) + 8;
+            const milestoneName = sheet.getRange(3, headerCol).getValue(); // แถว 3 = ชื่อ Milestone
+
+            // ดึงข้อมูลทั้ง 3 ช่องของ Milestone นี้ (Actual Start, Actual Finish, Actual %)
+            const rawStart = sheet.getRange(r, headerCol).getValue();
+            const rawFinish = sheet.getRange(r, headerCol + 1).getValue();
+            const rawPct = sheet.getRange(r, headerCol + 2).getValue();
+            
+            const actualStart = formatSheetDate(rawStart);
+            const actualFinish = formatSheetDate(rawFinish);
+            
+            let actualPct = 0;
+            if (typeof rawPct === 'number') {
+              actualPct = rawPct > 1.0 ? rawPct / 100.0 : rawPct;
+            } else if (rawPct) {
+              const cleanStr = String(rawPct).replace('%', '').trim();
+              const p = parseFloat(cleanStr);
+              if (!isNaN(p)) {
+                actualPct = p > 1.0 ? p / 100.0 : p;
+              }
+            }
+
+            // เติม % อัตโนมัติหากกรอกวันที่แต่เว้นช่อง % ไว้
+            if (actualPct === 0) {
+              if (actualFinish) {
+                actualPct = 1.0;
+              } else if (actualStart) {
+                actualPct = 0.5;
+              }
+            }
+            
+            // ส่ง Webhook ไปอัปเดต Render ทันที
+            notifyWebDashboard({
+              action: 'sheet_edited',
+              sheet: sheetName,
+              row: r,
+              order_no: String(orderNo || ''),
+              project_name: String(prjName),
+              milestone_name: String(milestoneName || ''),
+              milestone_index: mIdx,
+              actual_start: actualStart,
+              actual_finish: actualFinish,
+              new_value: actualPct,
+              actual_pct: actualPct
+            });
           }
-        }
-        
-        // ส่ง Webhook ไปอัปเดต Render ทันที
-        if (prjName) {
-          notifyWebDashboard({
-            action: 'sheet_edited',
-            sheet: sheetName,
-            row: row,
-            order_no: String(orderNo || ''),
-            project_name: String(prjName),
-            milestone_name: String(milestoneName || ''),
-            milestone_index: mIdx,
-            actual_start: actualStart,
-            actual_finish: actualFinish,
-            new_value: actualPct,
-            actual_pct: actualPct
-          });
         }
       }
     }
@@ -99,6 +119,18 @@ function formatSheetDate(val) {
   }
   const str = String(val).trim();
   if (str === '-' || str === '') return '';
+  const parts = str.split(/[\/\-]/);
+  if (parts.length === 3) {
+    let day = parts[0].padStart(2, '0');
+    let month = parts[1].padStart(2, '0');
+    let year = parseInt(parts[2]);
+    if (year < 100) year += 2000;
+    if (year > 2400) year -= 543;
+    if (parseInt(month) > 12 && parseInt(day) <= 12) {
+      const tmp = day; day = month; month = tmp;
+    }
+    return `${year}-${month}-${day}`;
+  }
   return str;
 }
 

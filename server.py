@@ -272,6 +272,7 @@ async def update_milestone(req: MilestoneUpdateRequest):
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update milestone. Check project_id and milestone_name.")
     
+    notify_data_updated()
     updated_project = engine.projects_dict[req.project_id]
     
     # 2. Write-back to Google Sheet via Google Apps Script Web App
@@ -406,6 +407,12 @@ async def handle_webhook(request: Request):
                 val_pct = val_pct / 100.0
         except:
             val_pct = 0.0
+            
+        if val_pct == 0.0:
+            if body.get("actual_finish"):
+                val_pct = 1.0
+            elif body.get("actual_start"):
+                val_pct = 0.5
             
         p_id = None
         # 1. Exact order_no
