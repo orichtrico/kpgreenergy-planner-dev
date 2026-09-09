@@ -21,7 +21,7 @@
  */
 
 // 🌐 URL ของ Web Dashboard บน Render
-const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner-dev.onrender.com/api/webhook';
+const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner-dev01.onrender.com/api/webhook';
 
 /**
  * 1. Installable Trigger: ทำงานทุกครั้งที่มีการพิมพ์/แก้ไขในเซลล์ของ Google Sheet
