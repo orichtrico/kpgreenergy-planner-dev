@@ -104,6 +104,11 @@
           <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
           <span>กราฟเปรียบเทียบ & การวิเคราะห์</span>
         </button>
+        <button onclick="switchTab('issues')" id="tab-btn-issues" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
+          <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-300"></i>
+          <span>รายงานปัญหาประจำสัปดาห์ (Weekly Issues)</span>
+          <span id="nav-issue-badge" class="hidden text-[10px] bg-rose-500 text-white font-bold px-1.5 py-0.5 rounded-full ml-1">0</span>
+        </button>
         <button onclick="switchTab('cctv')" id="tab-btn-cctv" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
           <i data-lucide="video" class="w-4 h-4 text-rose-300"></i>
           <span>CCTV Real time</span>
@@ -121,7 +126,7 @@
   <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
 
     <!-- KPI SUMMARY METRIC CARDS -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
       
       <!-- Card 1: Projects Total -->
       <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
@@ -153,7 +158,30 @@
         </div>
       </div>
 
-      <!-- Card 3: Overall Progress -->
+      <!-- Card 3: Energized Sites (New Requested) -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between relative overflow-hidden">
+        <div class="absolute -top-6 -right-6 w-20 h-20 bg-amber-500/10 rounded-full blur-xl pointer-events-none"></div>
+        <div>
+          <p class="text-xs font-semibold text-amber-800 uppercase tracking-wider flex items-center gap-1">
+            <span>จ่ายไฟแล้ว (Energize)</span>
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
+          </p>
+          <div class="flex items-baseline space-x-1.5 mt-1">
+            <h3 class="text-2xl sm:text-3xl font-extrabold text-amber-600" id="kpi-energized-sites">-</h3>
+            <span class="text-xs font-semibold text-slate-400" id="kpi-energized-pct">(-%)</span>
+          </div>
+          <p class="text-xs text-slate-600 mt-1 flex items-center gap-1">
+            <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-500"></i>
+            <span id="kpi-energized-mwp" class="font-bold text-slate-800">- MWp</span>
+            <span class="text-[10px] text-slate-400 font-mono">(T&C เริ่มแล้ว)</span>
+          </p>
+        </div>
+        <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-100 to-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center shrink-0 shadow-sm">
+          <i data-lucide="power" class="w-6 h-6"></i>
+        </div>
+      </div>
+
+      <!-- Card 4: Overall Progress -->
       <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
         <div>
           <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">ผลงานจริง / แผนงาน</p>
@@ -168,16 +196,16 @@
         </div>
       </div>
 
-      <!-- Card 4: Project Status -->
-      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between">
+      <!-- Card 5: Project Status -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex items-center justify-between col-span-2 md:col-span-1">
         <div>
           <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">สถานะโครงการ</p>
-          <div class="flex items-center space-x-3 mt-1.5">
-            <span class="text-xs font-medium bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md border border-emerald-200" id="kpi-completed">0 เสร็จ</span>
-            <span class="text-xs font-medium bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md border border-blue-200" id="kpi-ontrack">0 ปกติ</span>
-            <span class="text-xs font-medium bg-rose-50 text-rose-700 px-2 py-0.5 rounded-md border border-rose-200" id="kpi-delayed">0 ล่าช้า</span>
+          <div class="flex items-center space-x-2 mt-1.5">
+            <span class="text-xs font-medium bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded-md border border-emerald-200" id="kpi-completed">0 เสร็จ</span>
+            <span class="text-xs font-medium bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-md border border-blue-200" id="kpi-ontrack">0 ปกติ</span>
+            <span class="text-xs font-medium bg-rose-50 text-rose-700 px-1.5 py-0.5 rounded-md border border-rose-200" id="kpi-delayed">0 ล่าช้า</span>
           </div>
-          <p class="text-xs text-slate-400 mt-2">อัปเดตล่าสุด: <span id="kpi-update-time">วันนี้</span></p>
+          <p class="text-xs text-slate-400 mt-2">อัปเดต: <span id="kpi-update-time">วันนี้</span></p>
         </div>
         <div class="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
           <i data-lucide="pie-chart" class="w-6 h-6"></i>
@@ -201,7 +229,13 @@
               <h3 class="font-bold text-slate-800 text-base">ความก้าวหน้ารายเฟส (Phase Progress: Plan vs Actual)</h3>
               <p class="text-xs text-slate-500">เปรียบเทียบสัดส่วน % ความคืบหน้าของแต่ละล็อต/เฟส</p>
             </div>
-            <span class="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg font-medium">Weighted by Capacity</span>
+            <div class="flex items-center gap-2">
+              <span class="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg font-medium hidden sm:inline">Weighted by Capacity</span>
+              <button onclick="switchTab('comparison')" class="text-xs bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition shadow-sm">
+                <span>กราฟแท่งเปรียบเทียบราย Lot</span>
+                <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
           </div>
           <div class="h-64 sm:h-72" id="phase-bar-chart"></div>
         </div>
@@ -342,6 +376,20 @@
             </div>
           </div>
 
+          <!-- Site Issue Alert Banner -->
+          <div id="prj-issue-banner" class="hidden mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-between">
+            <div class="flex items-center space-x-2.5">
+              <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600 shrink-0"></i>
+              <div>
+                <h4 class="text-xs font-bold text-amber-900" id="prj-issue-banner-title">ไซต์นี้มีปัญหาค้างอยู่</h4>
+                <p class="text-[11px] text-amber-700 mt-0.5" id="prj-issue-banner-desc">-</p>
+              </div>
+            </div>
+            <button onclick="viewSiteIssuesInTab()" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold shrink-0 transition shadow-sm">
+              ดูรายละเอียด & การแก้ไข
+            </button>
+          </div>
+
         </div>
 
         <!-- S-CURVE INTERACTIVE CHART -->
@@ -402,21 +450,216 @@
     <!-- ========================================================================= -->
     <!-- TAB 3: COMPARISON & ANALYTICS -->
     <!-- ========================================================================= -->
+    <!-- ========================================================================= -->
+    <!-- TAB 3: COMPARISON & ANALYTICS -->
+    <!-- ========================================================================= -->
     <div id="tab-comparison" class="hidden space-y-6">
       
-      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+      <!-- Filter & Controls Header -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h3 class="font-bold text-slate-800 text-base">กราฟแท่งเปรียบเทียบความก้าวหน้าทุกล็อต (Multi-Project Comparison)</h3>
-          <p class="text-xs text-slate-500">วิเคราะห์ผลต่าง % Actual vs % Planned ของแต่ละโครงการ</p>
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+            <h3 class="font-bold text-slate-900 text-base">รายงานความก้าวหน้ารายสัปดาห์เปรียบเทียบ Plan & Actual เป็น Lot</h3>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">กราฟแท่งแนวตั้งเปรียบเทียบความคืบหน้าแผนงาน vs ผลงานจริง ระบุชื่อไซต์และขนาดกำลังการผลิต (kWp) แต่ละไซต์</p>
         </div>
-        <select id="compare-lot-select" onchange="renderComparisonTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none">
-          <option value="ALL">แสดงทุกโครงการ (Top 25)</option>
-        </select>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+          <!-- 1. Lot Selector -->
+          <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-500">Lot:</span>
+            <select id="compare-lot-select" onchange="renderComparisonTab()" class="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer">
+              <option value="ALL">ทุกล็อต (All Lots)</option>
+            </select>
+          </div>
+
+          <!-- 2. Week Selector -->
+          <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-500">สัปดาห์:</span>
+            <select id="compare-week-select" onchange="renderComparisonTab()" class="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer">
+              <option value="latest">📌 สัปดาห์ปัจจุบัน (As of Today)</option>
+            </select>
+          </div>
+
+          <!-- 3. Mode Toggle -->
+          <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-500">โหมด:</span>
+            <select id="compare-mode-select" onchange="renderComparisonTab()" class="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer">
+              <option value="cumulative">📈 สะสม (Cumulative %)</option>
+              <option value="weekly">📊 เฉพาะสัปดาห์ (Weekly %)</option>
+            </select>
+          </div>
+
+          <!-- 4. Sort Order -->
+          <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-sm">
+            <span class="text-[11px] font-semibold text-slate-500">เรียง:</span>
+            <select id="compare-sort-select" onchange="renderComparisonTab()" class="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer">
+              <option value="capacity_desc">กำลังผลิต (มาก ➔ น้อย)</option>
+              <option value="name_asc">ชื่อไซต์ (A-Z)</option>
+              <option value="variance_asc">ล่าช้าสุด ➔ เร็วสุด</option>
+              <option value="actual_desc">ผลงานจริงสูงสุด</option>
+            </select>
+          </div>
+
+          <!-- 5. Generate Lot PDF Report Button -->
+          <button onclick="generateLotPDF()" id="btn-gen-lot-pdf" class="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm flex items-center gap-1.5 cursor-pointer ml-auto sm:ml-0" title="พิมพ์หรือดาวน์โหลดรายงานสรุปความก้าวหน้าราย Lot">
+            <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+            <span>สร้าง Report ราย Lot (PDF)</span>
+          </button>
+        </div>
       </div>
 
-      <!-- Comparison Chart -->
+      <!-- Lot KPI Summary Cards -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="lot-kpi-container">
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-3.5">
+          <div class="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-lg">🏢</div>
+          <div>
+            <div class="text-[11px] font-medium text-slate-500">จำนวนไซต์ใน Lot</div>
+            <div class="text-xl font-bold text-slate-900" id="lot-kpi-sites">-</div>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-3.5">
+          <div class="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-lg">⚡</div>
+          <div>
+            <div class="text-[11px] font-medium text-slate-500">กำลังการผลิตรวม Lot</div>
+            <div class="text-xl font-bold text-slate-900" id="lot-kpi-capacity">-</div>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-3.5">
+          <div class="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-lg">📅</div>
+          <div>
+            <div class="text-[11px] font-medium text-slate-500">แผนงานเฉลี่ย (Avg Plan)</div>
+            <div class="text-xl font-bold text-blue-600" id="lot-kpi-plan">0.0%</div>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-3.5">
+          <div class="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg">🚀</div>
+          <div>
+            <div class="text-[11px] font-medium text-slate-500">ผลงานจริงเฉลี่ย (Avg Actual)</div>
+            <div class="flex items-baseline gap-2">
+              <span class="text-xl font-bold text-emerald-600" id="lot-kpi-actual">0.0%</span>
+              <span class="text-xs font-semibold px-2 py-0.5 rounded-full" id="lot-kpi-variance">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-Category Delay Breakdown Section -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+          <div>
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+              <i data-lucide="layers" class="w-4 h-4 text-emerald-600"></i>
+              <span>การวิเคราะห์ความล่าช้าแยกตาม 3 หมวดหมู่งานหลัก (Category Delay Breakdown)</span>
+            </h4>
+            <p class="text-[11px] text-slate-500 mt-0.5" id="lot-category-subtitle">แบ่งตาม: งานขออนุญาตราชการ, งานออกแบบวิศวกรรม, งานก่อสร้างและติดตั้ง พร้อมวิเคราะห์สัดส่วนความล่าช้า</p>
+          </div>
+          <span class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 self-start sm:self-auto" id="lot-category-badge">ถ่วงน้ำหนักตามกำลังการผลิต kWp ของ Lot</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="lot-category-cards-container">
+          <!-- Injected via JavaScript -->
+        </div>
+      </div>
+
+      <!-- Lot S-Curve Interactive Line Chart -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+              <i data-lucide="trending-up" class="w-4 h-4 text-emerald-600"></i>
+              <span id="lot-scurve-title">กราฟ S-Curve ความก้าวหน้าสะสมราย Lot (Planned vs Actual S-Curve)</span>
+            </h4>
+            <p class="text-[11px] text-slate-500 mt-0.5" id="lot-scurve-subtitle">เส้นสีฟ้าแสดงแผนงานสะสม (Planned S-Curve), เส้นสีเขียวแสดงผลงานจริงสะสม (Actual S-Curve)</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <!-- View Range Toggle -->
+            <div class="inline-flex items-center p-0.5 bg-slate-100 rounded-lg text-xs font-medium border border-slate-200/60 shadow-2xs" id="scurve-view-toggle-container">
+              <button type="button" id="scurve-view-cutoff-btn" onclick="setScurveViewMode('cutoff')" class="px-2.5 py-1 rounded-md text-slate-800 bg-white font-bold shadow-xs transition-all flex items-center gap-1.5 border border-slate-200/80">
+                <i data-lucide="scissors" class="w-3.5 h-3.5 text-emerald-600"></i>
+                <span id="scurve-view-cutoff-label">ถึงสัปดาห์ที่เลือก</span>
+              </button>
+              <button type="button" id="scurve-view-full-btn" onclick="setScurveViewMode('full')" class="px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-700 transition-all flex items-center gap-1.5">
+                <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                <span>เต็มโครงการ</span>
+              </button>
+            </div>
+            <!-- Legend -->
+            <div class="flex items-center space-x-3 text-xs">
+              <span class="flex items-center gap-1.5 font-medium text-slate-700"><span class="w-3 h-1 bg-[#2563eb] rounded"></span> แผนงานสะสม (% Plan)</span>
+              <span class="flex items-center gap-1.5 font-medium text-slate-700"><span class="w-3 h-1 bg-[#10b981] rounded"></span> ผลงานจริงสะสม (% Actual)</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="h-72 sm:h-80 w-full" id="lot-scurve-chart"></div>
+      </div>
+
+      <!-- Comparison Vertical Bar Chart -->
       <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
-        <div class="h-96" id="comparison-bar-chart"></div>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-3 border-b border-slate-100 gap-2">
+          <div>
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+              <i data-lucide="bar-chart-2" class="w-4 h-4 text-emerald-600"></i>
+              <span id="chart-lot-title">กราฟแท่งแนวตั้งเปรียบเทียบความคืบหน้า Plan vs Actual</span>
+            </h4>
+            <p class="text-[11px] text-slate-500" id="chart-lot-subtitle">แกน X ระบุชื่อไซต์และขนาดกำลังการผลิต (kWp) ใต้แท่งกราฟ</p>
+          </div>
+          <div class="flex items-center gap-4 text-xs">
+            <span class="inline-flex items-center gap-1.5 font-medium text-slate-700">
+              <span class="w-3 h-3 rounded bg-[#2563eb]"></span> แผนงาน (% Plan)
+            </span>
+            <span class="inline-flex items-center gap-1.5 font-medium text-slate-700">
+              <span class="w-3 h-3 rounded bg-[#10b981]"></span> ผลงานจริง (% Actual)
+            </span>
+          </div>
+        </div>
+
+        <!-- Chart with responsive scroll if many sites -->
+        <div class="overflow-x-auto pb-2">
+          <div id="comparison-bar-chart-wrapper" class="min-w-full">
+            <div id="comparison-bar-chart" style="min-height: 420px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lot Sites Detailed Table -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div class="p-5 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
+              <i data-lucide="list" class="w-4 h-4 text-slate-600"></i>
+              <span id="lot-table-title">ตารางแจกแจงรายไซต์ใน Lot</span>
+            </h3>
+            <p class="text-xs text-slate-500">คลิกที่ "ดูรายละเอียด" เพื่อสลับไปดู S-Curve และ Milestone 33 งานของไซต์นั้นทันที</p>
+          </div>
+          <span class="px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-xs font-bold font-mono" id="lot-table-count">0 ไซต์</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-50 text-slate-700 uppercase font-semibold border-b border-slate-200">
+              <tr>
+                <th class="py-3 px-3 text-center w-12">ลำดับ</th>
+                <th class="py-3 px-4">ชื่อไซต์ / โครงการ</th>
+                <th class="py-3 px-3">Lot</th>
+                <th class="py-3 px-3">กลุ่มธุรกิจ</th>
+                <th class="py-3 px-3 text-right">กำลังผลิต (kWp)</th>
+                <th class="py-3 px-3 text-center">แผนงาน (% Plan)</th>
+                <th class="py-3 px-3 text-center">ผลงานจริง (% Actual)</th>
+                <th class="py-3 px-3 text-center">ผลต่าง (Variance)</th>
+                <th class="py-3 px-3 text-center">สถานะ</th>
+                <th class="py-3 px-3 text-center">การกระทำ</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100" id="lot-sites-table-body">
+              <!-- Injected by JS -->
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Delayed Projects Watchlist -->
@@ -435,7 +678,7 @@
                 <th class="py-3 px-4">โครงการ</th>
                 <th class="py-3 px-3">กลุ่มธุรกิจ</th>
                 <th class="py-3 px-3">Lot</th>
-                <th class="py-3 px-3">กำลังการผลิต (kWp)</th>
+                <th class="py-3 px-3 text-right">กำลังการผลิต (kWp)</th>
                 <th class="py-3 px-3 text-center">แผนงาน</th>
                 <th class="py-3 px-3 text-center">ผลงานจริง</th>
                 <th class="py-3 px-3 text-center">ความล่าช้า (Variance)</th>
@@ -446,6 +689,178 @@
               <!-- Delayed projects injected here -->
             </tbody>
           </table>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- TAB: WEEKLY ISSUES & ACTIONS LOG -->
+    <!-- ========================================================================= -->
+    <div id="tab-issues" class="hidden space-y-6">
+
+      <!-- Header & Action Bar -->
+      <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center space-x-2.5">
+            <div class="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold">
+              <i data-lucide="alert-circle" class="w-5 h-5 text-amber-600"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-900 text-lg">รายงานปัญหา & การแก้ไขประจำสัปดาห์ (Weekly Issue & Action Log)</h3>
+              <p class="text-xs text-slate-500">บันทึกวันเริ่มปัญหา วันจบปัญหา อุปสรรคหน้างาน และแนวทางแก้ไขเพื่อติดตามและประเมินผลกระทบ</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center space-x-2.5">
+          <button onclick="renderIssuesTab()" class="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition">
+            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+            <span>รีเฟรช</span>
+          </button>
+          <button onclick="openNewIssueModal()" class="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#043327] text-white text-xs font-semibold shadow-sm flex items-center gap-2 transition">
+            <i data-lucide="plus-circle" class="w-4 h-4"></i>
+            <span>+ รายงานปัญหาใหม่</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">ปัญหาที่ค้างอยู่ (Open / Ongoing)</p>
+            <h4 class="text-2xl font-bold text-amber-600 mt-1" id="issue-kpi-open">0</h4>
+            <p class="text-[10px] text-slate-400 mt-0.5">ต้องการการติดตามแก้ไข</p>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+            <i data-lucide="clock" class="w-5 h-5"></i>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">ความรุนแรงสูง (High Severity)</p>
+            <h4 class="text-2xl font-bold text-rose-600 mt-1" id="issue-kpi-high">0</h4>
+            <p class="text-[10px] text-slate-400 mt-0.5">กระทบกำหนด COD / S-Curve</p>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+            <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">แก้ไขสำเร็จแล้ว (Resolved)</p>
+            <h4 class="text-2xl font-bold text-emerald-600 mt-1" id="issue-kpi-resolved">0</h4>
+            <p class="text-[10px] text-slate-400 mt-0.5">มีบันทึกวันจบปัญหาครบถ้วน</p>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+            <i data-lucide="check-circle-2" class="w-5 h-5"></i>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">ไซต์ที่ได้รับผลกระทบ</p>
+            <h4 class="text-2xl font-bold text-slate-800 mt-1" id="issue-kpi-sites">0 ไซต์</h4>
+            <p class="text-[10px] text-slate-400 mt-0.5">จากโครงการที่กำลังติดตั้ง</p>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+            <i data-lucide="map-pin" class="w-5 h-5"></i>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter Controls Bar -->
+      <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-wrap items-center gap-3">
+        <!-- Lot Filter -->
+        <div class="flex items-center space-x-2">
+          <label class="text-xs font-semibold text-slate-600 whitespace-nowrap">Lot:</label>
+          <select id="issue-filter-lot" onchange="renderIssuesTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500">
+            <option value="ALL">ทุกล็อต (All Lots)</option>
+          </select>
+        </div>
+
+        <!-- Site Filter -->
+        <div class="flex items-center space-x-2">
+          <label class="text-xs font-semibold text-slate-600 whitespace-nowrap">โครงการ:</label>
+          <select id="issue-filter-project" onchange="renderIssuesTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500 max-w-[200px] truncate">
+            <option value="ALL">ทุกโครงการ (All Sites)</option>
+          </select>
+        </div>
+
+        <!-- Status Filter -->
+        <div class="flex items-center space-x-2">
+          <label class="text-xs font-semibold text-slate-600 whitespace-nowrap">สถานะ:</label>
+          <select id="issue-filter-status" onchange="renderIssuesTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500">
+            <option value="ALL">ทุกสถานะ</option>
+            <option value="IN_PROGRESS" selected>🟡 กำลังแก้ไข / รอดำเนินการ (Open)</option>
+            <option value="RESOLVED">🟢 แก้ไขเสร็จสิ้น (Resolved)</option>
+          </select>
+        </div>
+
+        <!-- Category Filter -->
+        <div class="flex items-center space-x-2">
+          <label class="text-xs font-semibold text-slate-600 whitespace-nowrap">หมวดหมู่:</label>
+          <select id="issue-filter-category" onchange="renderIssuesTab()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500">
+            <option value="ALL">ทุกหมวดหมู่งาน</option>
+            <option value="งานขออนุญาตราชการ">งานขออนุญาตราชการ</option>
+            <option value="งานจัดซื้อและขนส่ง">งานจัดซื้อและขนส่ง</option>
+            <option value="งานก่อสร้างและโครงสร้าง">งานก่อสร้างและโครงสร้าง</option>
+            <option value="งานไฟฟ้าและอินเวอร์เตอร์">งานไฟฟ้าและอินเวอร์เตอร์</option>
+            <option value="สภาพอากาศและสิ่งแวดล้อม">สภาพอากาศและสิ่งแวดล้อม</option>
+            <option value="อื่นๆ">อื่นๆ</option>
+          </select>
+        </div>
+
+        <!-- Search Input -->
+        <div class="flex-1 min-w-[180px]">
+          <div class="relative">
+            <i data-lucide="search" class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+            <input type="text" id="issue-filter-search" oninput="renderIssuesTab()" placeholder="ค้นหาชื่อไซต์, รายละเอียดปัญหา, ผู้รับผิดชอบ..." class="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          </div>
+        </div>
+      </div>
+
+      <!-- Issues Table & Cards -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-100 flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <h4 class="font-bold text-slate-900 text-sm">รายการบันทึกปัญหาและการแก้ไข</h4>
+            <span id="issue-list-count" class="text-xs font-semibold px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full">0 รายการ</span>
+          </div>
+          <span class="text-[11px] text-slate-400">เรียงตามปัญหาที่ยังค้างอยู่และวันที่เริ่มปัญหา</span>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
+                <th class="p-3.5 whitespace-nowrap">รหัส / โครงการ</th>
+                <th class="p-3.5 whitespace-nowrap">สัปดาห์ / หมวดหมู่</th>
+                <th class="p-3.5 whitespace-nowrap">วันเริ่มปัญหา</th>
+                <th class="p-3.5 whitespace-nowrap">วันจบปัญหา</th>
+                <th class="p-3.5 min-w-[220px]">คำอธิบายปัญหา & สาเหตุ</th>
+                <th class="p-3.5 min-w-[220px]">การแก้ไขประจำสัปดาห์</th>
+                <th class="p-3.5 text-center whitespace-nowrap">สถานะ</th>
+                <th class="p-3.5 text-center whitespace-nowrap">ผลกระทบ</th>
+                <th class="p-3.5 text-center whitespace-nowrap">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody id="issues-table-body" class="divide-y divide-slate-100 text-slate-700">
+              <!-- Issues injected here via JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Empty State -->
+        <div id="issues-empty-state" class="hidden p-12 text-center">
+          <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3">
+            <i data-lucide="check-circle-2" class="w-6 h-6"></i>
+          </div>
+          <h5 class="font-bold text-slate-800 text-sm">ไม่พบปัญหาตามเงื่อนไขที่เลือก</h5>
+          <p class="text-xs text-slate-500 mt-1">ทุกโครงการทำงานราบรื่นตามแผน หรือลองเปลี่ยนเงื่อนไขตัวกรองด้านบน</p>
         </div>
       </div>
 
@@ -770,6 +1185,128 @@
           <button type="submit" id="modal-submit-btn" class="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-semibold shadow-sm flex items-center gap-1.5">
             <i data-lucide="check" class="w-4 h-4"></i>
             <span>ยืนยันและบันทึกข้อมูล 2-Way</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- MODAL: ADD / EDIT ISSUE -->
+  <!-- ========================================================================= -->
+  <div id="modal-issue" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 relative my-8">
+      
+      <div class="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center font-bold">
+            <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-slate-900 text-base" id="modal-issue-title">บันทึกรายงานปัญหาใหม่</h3>
+            <p class="text-xs text-slate-500" id="modal-issue-subtitle">กรอกรายละเอียดปัญหา วันเริ่ม-วันจบ และแนวทางแก้ไข</p>
+          </div>
+        </div>
+        <button onclick="closeIssueModal()" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <form id="modal-issue-form" onsubmit="handleIssueSubmit(event)" class="space-y-4 text-xs">
+        <input type="hidden" id="issue-form-id" value="">
+
+        <!-- Project Selector -->
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">เลือกโครงการ / ไซต์ที่พบปัญหา <span class="text-rose-500">*</span></label>
+          <select id="issue-form-project" required class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 font-medium"></select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Report Week -->
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">สัปดาห์ที่รายงาน</label>
+            <input type="text" id="issue-form-week" placeholder="เช่น W10 (02/03/26 - 08/03/26)" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+          </div>
+          <!-- Category -->
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">หมวดหมู่งาน</label>
+            <select id="issue-form-category" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 font-medium">
+              <option value="งานขออนุญาตราชการ">งานขออนุญาตราชการ</option>
+              <option value="งานจัดซื้อและขนส่ง">งานจัดซื้อและขนส่ง</option>
+              <option value="งานก่อสร้างและโครงสร้าง">งานก่อสร้างและโครงสร้าง</option>
+              <option value="งานไฟฟ้าและอินเวอร์เตอร์">งานไฟฟ้าและอินเวอร์เตอร์</option>
+              <option value="สภาพอากาศและสิ่งแวดล้อม">สภาพอากาศและสิ่งแวดล้อม</option>
+              <option value="อื่นๆ">อื่นๆ</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Dates: Start and End Date -->
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">วันที่เริ่มเกิดปัญหา <span class="text-rose-500">*</span></label>
+            <input type="date" id="issue-form-start-date" required class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
+              <span>วันที่จบปัญหา (แก้ไขสำเร็จ)</span>
+              <span class="text-[10px] text-slate-400 font-normal">เว้นว่างถ้ายังไม่จบ</span>
+            </label>
+            <input type="date" id="issue-form-end-date" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+          </div>
+        </div>
+
+        <!-- Problem Description -->
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">คำอธิบายปัญหา & สาเหตุ (Problem & Root Cause) <span class="text-rose-500">*</span></label>
+          <textarea id="issue-form-desc" rows="3" required placeholder="ระบุอาการของปัญหา สาเหตุ หรืออุปสรรคที่พบ..." class="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none"></textarea>
+        </div>
+
+        <!-- Mitigation / Action Plan -->
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">แนวทางการแก้ไขประจำสัปดาห์ (Weekly Action & Mitigation)</label>
+          <textarea id="issue-form-action" rows="3" placeholder="ระบุสิ่งที่ได้ดำเนินการแก้ไขในสัปดาห์นี้ หรือแผนรับมือ..." class="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none"></textarea>
+        </div>
+
+        <!-- Status, Severity, Reported By -->
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">สถานะ</label>
+            <select id="issue-form-status" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 font-medium">
+              <option value="IN_PROGRESS">🟡 กำลังแก้ไข (In Progress)</option>
+              <option value="OPEN">🔴 รอดำเนินการ (Open)</option>
+              <option value="RESOLVED">🟢 แก้ไขแล้ว (Resolved)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">ระดับผลกระทบ</label>
+            <select id="issue-form-severity" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 font-medium">
+              <option value="HIGH">สูง (กระทบกำหนดเสร็จ)</option>
+              <option value="MEDIUM" selected>ปานกลาง</option>
+              <option value="LOW">ต่ำ / เล็กน้อย</option>
+            </select>
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">ผู้รายงาน</label>
+            <input type="text" id="issue-form-reporter" placeholder="ชื่อผู้รายงาน" value="วิศวกรโครงการ" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500">
+          </div>
+        </div>
+
+        <!-- Password Confirmation -->
+        <div class="pt-2 border-t border-slate-100">
+          <label class="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
+            <span class="flex items-center gap-1"><i data-lucide="key-round" class="w-3.5 h-3.5 text-slate-500"></i> รหัสผ่านผู้แก้ไข:</span>
+            <span class="text-[10px] text-emerald-600 font-normal">รหัสผ่าน: KPGEditor</span>
+          </label>
+          <input type="password" id="issue-form-password" placeholder="ใส่รหัสผ่าน KPGEditor เพื่อยืนยัน" required class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono">
+        </div>
+
+        <!-- Buttons -->
+        <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+          <button type="button" onclick="closeIssueModal()" class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">ยกเลิก</button>
+          <button type="submit" id="modal-issue-submit-btn" class="px-5 py-2.5 rounded-xl bg-[#064e3b] hover:bg-[#043327] text-white font-semibold shadow-sm flex items-center gap-1.5 transition">
+            <i data-lucide="check" class="w-4 h-4"></i>
+            <span>บันทึกรายงานปัญหา</span>
           </button>
         </div>
       </form>

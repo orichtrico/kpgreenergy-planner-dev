@@ -37,6 +37,8 @@ def parse_date(d_str):
                 res_date = datetime.strptime(clean_str, fmt).date()
                 if res_date.year > 2400:  # Buddhist era year (e.g. 2568 -> 2025)
                     res_date = res_date.replace(year=res_date.year - 543)
+                elif res_date.year < 1000:  # Typo correction (e.g. 0206 -> 2026)
+                    res_date = res_date.replace(year=2026 if res_date.year in (206, 26) else res_date.year + 2000)
                 return res_date
             except ValueError:
                 pass
@@ -62,6 +64,8 @@ class ProjectEngine:
         self.projects = []
         self.projects_dict = {}
         self.google_sheet_webapp_url = ''
+        self.issues_path = os.path.join(os.path.dirname(cache_path), 'issues_cache.json')
+        self.issues = []
         
         # Load from cache first
         if not self.load_from_cache():
@@ -70,6 +74,7 @@ class ProjectEngine:
                 self.save_to_cache()
             else:
                 print(f"[Engine Warning] Neither valid cache nor Excel file found.")
+        self.load_issues_cache()
 
     def load_from_cache(self) -> bool:
         # Try primary cache
@@ -414,7 +419,7 @@ class ProjectEngine:
         for m in milestones:
             for d_field in ["planned_start", "planned_finish", "actual_start", "actual_finish"]:
                 dt = parse_date(m.get(d_field))
-                if dt:
+                if dt and 2020 <= dt.year <= 2035:
                     all_dates.append(dt)
         
         if not all_dates:
@@ -859,3 +864,436 @@ class ProjectEngine:
             self.save_to_cache()
             
         return changed_projects_count
+
+    def load_issues_cache(self):
+        if os.path.exists(self.issues_path):
+            try:
+                with open(self.issues_path, 'r', encoding='utf-8') as f:
+                    self.issues = json.load(f)
+                print(f"[Engine] Loaded {len(self.issues)} issues from issues_cache.json.")
+                return
+            except Exception as e:
+                print(f"[Engine Warning] Failed to load issues cache: {e}")
+        
+        self.issues = []
+        self.save_issues_cache()
+
+    def save_issues_cache(self):
+        try:
+            tmp_path = self.issues_path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(self.issues, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.issues_path)
+        except Exception as e:
+            print(f"[Engine Error] Failed to save issues cache: {e}")
+
+    def get_issues(self, lot: str = None, project_id: str = None, status: str = None, category: str = None, search: str = None) -> List[Dict[str, Any]]:
+        results = list(self.issues)
+        if lot and lot != 'ALL':
+            results = [i for i in results if str(i.get("lot", "")).strip().upper() == str(lot).strip().upper()]
+        if project_id and project_id != 'ALL':
+            results = [i for i in results if i.get("project_id") == project_id]
+        if status and status != 'ALL':
+            results = [i for i in results if i.get("status") == status]
+        if category and category != 'ALL':
+            results = [i for i in results if i.get("category") == category]
+        if search:
+            s = search.strip().lower()
+            results = [
+                i for i in results
+                if s in str(i.get("site_name", "")).lower()
+                or s in str(i.get("description", "")).lower()
+                or s in str(i.get("action_plan", "")).lower()
+                or s in str(i.get("reported_by", "")).lower()
+                or s in str(i.get("id", "")).lower()
+            ]
+        
+        def sort_key(item):
+            stat_order = 0 if item.get("status") in ["OPEN", "IN_PROGRESS"] else 1
+            return (stat_order, item.get("start_date") or "", item.get("id") or "")
+        results.sort(key=sort_key, reverse=False)
+        return results
+
+    def add_issue(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        existing_nums = []
+        for item in self.issues:
+            iid = str(item.get("id", ""))
+            if iid.startswith("ISS-"):
+                try:
+                    existing_nums.append(int(iid.split("-")[1]))
+                except:
+                    pass
+        next_num = (max(existing_nums) + 1) if existing_nums else 1
+        new_id = f"ISS-{next_num:03d}"
+
+        p_id = data.get("project_id", "")
+        site_name = data.get("site_name", "")
+        lot = data.get("lot", "")
+
+        if p_id and p_id in self.projects_dict:
+            p = self.projects_dict[p_id]
+            site_name = p.get("name") or site_name
+            lot = p.get("lot") or lot
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        issue_obj = {
+            "id": new_id,
+            "project_id": p_id,
+            "site_name": site_name,
+            "lot": lot,
+            "week": data.get("week") or f"สัปดาห์ {datetime.now().strftime('%d/%m/%Y')}",
+            "start_date": data.get("start_date") or date.today().strftime("%Y-%m-%d"),
+            "end_date": data.get("end_date") or None,
+            "category": data.get("category") or "งานทั่วไป",
+            "description": data.get("description", "").strip(),
+            "action_plan": data.get("action_plan", "").strip(),
+            "status": data.get("status") or "IN_PROGRESS",
+            "severity": data.get("severity") or "MEDIUM",
+            "reported_by": data.get("reported_by") or "วิศวกรหน้างาน",
+            "created_at": now_str,
+            "updated_at": now_str
+        }
+        
+        if issue_obj["status"] == "RESOLVED" and not issue_obj["end_date"]:
+            issue_obj["end_date"] = date.today().strftime("%Y-%m-%d")
+
+        self.issues.insert(0, issue_obj)
+        self.save_issues_cache()
+        return issue_obj
+
+    def update_issue(self, issue_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for issue in self.issues:
+            if issue.get("id") == issue_id:
+                p_id = updates.get("project_id") or issue.get("project_id")
+                if p_id and p_id in self.projects_dict:
+                    p = self.projects_dict[p_id]
+                    updates["project_id"] = p_id
+                    updates["site_name"] = p.get("name") or updates.get("site_name")
+                    updates["lot"] = p.get("lot") or updates.get("lot")
+                
+                for k, v in updates.items():
+                    if k != "id":
+                        issue[k] = v
+                issue["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if issue.get("status") == "RESOLVED" and not issue.get("end_date"):
+                    issue["end_date"] = date.today().strftime("%Y-%m-%d")
+                self.save_issues_cache()
+                return issue
+        return None
+
+    def delete_issue(self, issue_id: str) -> bool:
+        init_len = len(self.issues)
+        self.issues = [i for i in self.issues if i.get("id") != issue_id]
+        if len(self.issues) < init_len:
+            self.save_issues_cache()
+            return True
+        return False
+
+    def get_energized_summary(self) -> Dict[str, Any]:
+        """
+        Calculates Energized Sites:
+        Counts a site as Energized if Milestone 'Testing & Commissioning' has an actual_start date.
+        Returns total energized count, total energized MWp/kWp, and % of total active sites.
+        """
+        energized = []
+        for p in self.active_projects:
+            for m in p.get('milestones', []):
+                if m.get('name', '').strip().lower() == 'testing & commissioning':
+                    act_start = m.get('actual_start')
+                    if act_start and str(act_start).strip() not in ('', '-', 'None'):
+                        energized.append(p)
+                        break
+        total_kwp = sum(p.get('capacity_kwp', 0.0) for p in energized)
+        all_kwp = sum(p.get('capacity_kwp', 0.0) for p in self.active_projects)
+        return {
+            "total_energized_sites": len(energized),
+            "total_energized_kwp": round(total_kwp, 2),
+            "total_energized_mwp": round(total_kwp / 1000.0, 2),
+            "total_active_sites": len(self.active_projects),
+            "total_active_kwp": round(all_kwp, 2),
+            "total_active_mwp": round(all_kwp / 1000.0, 2),
+            "pct_sites": round(len(energized) / len(self.active_projects) * 100.0, 1) if self.active_projects else 0.0,
+            "pct_capacity": round(total_kwp / all_kwp * 100.0, 1) if all_kwp > 0 else 0.0,
+            "site_ids": [p['id'] for p in energized]
+        }
+
+    def get_lot_scurve_and_categories(self, lot: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Calculates Lot Cumulative S-Curve and 3-Category Breakdown (% delay for Permission, Design, Construction)
+        both dynamically week-by-week and overall as of current week.
+        """
+        if not lot or lot == 'ALL':
+            lot_prjs = self.active_projects
+        else:
+            lot_prjs = [p for p in self.active_projects if str(p.get('lot', '')).strip().upper() == str(lot).strip().upper()]
+
+        total_cap = sum(p.get('capacity_kwp', 0.0) for p in lot_prjs)
+        if total_cap == 0:
+            total_cap = 1.0
+
+        cat_names = [
+            "งานขออนุญาตราชการ (Permission)",
+            "งานออกแบบวิศวกรรม (Engineering Design)",
+            "งานก่อสร้างและติดตั้ง (Construction Work)"
+        ]
+
+        all_weeks = set()
+        for p in lot_prjs:
+            sc = p.get('s_curve', {})
+            for w in sc.get('weeks', []):
+                all_weeks.add(str(w)[:10])
+        
+        sorted_weeks = sorted(list(all_weeks))
+        num_weeks = len(sorted_weeks)
+
+        # Pre-parse week dates for high-performance milestone interval coverage
+        sorted_week_dates = [datetime.strptime(ws, '%Y-%m-%d').date() for ws in sorted_weeks]
+        sorted_week_sundays = [d + timedelta(days=6) for d in sorted_week_dates]
+
+        # Find max actual date across system
+        max_system_act_date = '2026-09-14'
+        for p in self.active_projects:
+            sc = p.get('s_curve', {})
+            pw = [str(w)[:10] for w in sc.get('weeks', [])]
+            ac = sc.get('actual_cum', [])
+            for i, val in enumerate(ac):
+                if val is not None and i < len(pw):
+                    if pw[i] > max_system_act_date:
+                        max_system_act_date = pw[i]
+
+        # 1. Calculate category progress for each project on project's own timeline
+        project_cat_data = {}
+        today = date.today()
+
+        for p in lot_prjs:
+            pid = p['id']
+            sc = p.get('s_curve', {})
+            p_weeks = [str(w)[:10] for w in sc.get('weeks', [])]
+            p_num_w = len(p_weeks)
+            p_dates = [datetime.strptime(ws, '%Y-%m-%d').date() for ws in p_weeks]
+            p_sundays = [d + timedelta(days=6) for d in p_dates]
+
+            p_cat_plan_wk = {c: [0.0] * p_num_w for c in cat_names}
+            p_cat_act_wk = {c: [0.0] * p_num_w for c in cat_names}
+            p_cat_weights = {c: 0.0 for c in cat_names}
+
+            for m in p.get('milestones', []):
+                m_name = m.get('name', '')
+                cat = self.milestone_categories.get(m_name)
+                if not cat:
+                    m_lower = m_name.lower()
+                    if 'design' in m_lower or 'procurement' in m_lower or 'soiling' in m_lower:
+                        cat = "งานออกแบบวิศวกรรม (Engineering Design)"
+                    elif 'ราชการ' in m_lower or 'cpf' in m_lower or 'cop' in m_lower or 'อ.' in m_lower or 'รง.' in m_lower or 'ขนาน' in m_lower:
+                        cat = "งานขออนุญาตราชการ (Permission)"
+                    else:
+                        cat = "งานก่อสร้างและติดตั้ง (Construction Work)"
+                if cat not in p_cat_weights:
+                    cat = "งานก่อสร้างและติดตั้ง (Construction Work)"
+
+                w = m.get('weight', 0.0)
+                if w <= 0:
+                    continue
+                p_cat_weights[cat] += w
+
+                # Planned weekly
+                ps = parse_date(m.get('planned_start'))
+                pf = parse_date(m.get('planned_finish'))
+                if ps and pf:
+                    covered = [i for i in range(p_num_w) if not (pf < p_dates[i] or ps > p_sundays[i])]
+                    if covered:
+                        inc = w / len(covered)
+                        for i in covered:
+                            p_cat_plan_wk[cat][i] += inc
+
+                # Actual weekly
+                act_pct = m.get('actual_pct', 0.0)
+                if act_pct > 0:
+                    act_w = act_pct * w
+                    as_d = parse_date(m.get('actual_start')) or ps
+                    af_d = parse_date(m.get('actual_finish')) or today
+                    act_covered = [i for i in range(p_num_w) if not (af_d < p_dates[i] or as_d > p_sundays[i])]
+                    if act_covered:
+                        inc = act_w / len(act_covered)
+                        for i in act_covered:
+                            p_cat_act_wk[cat][i] += inc
+
+            # Cumulative on project weeks (enforcing monotonic non-decreasing actuals)
+            p_cat_plan_cum = {c: [] for c in cat_names}
+            p_cat_act_cum = {c: [] for c in cat_names}
+            for c in cat_names:
+                cp, ca = 0.0, 0.0
+                cw = p_cat_weights[c]
+                last_a = 0.0
+                for i in range(p_num_w):
+                    cp += p_cat_plan_wk[c][i] * 100.0
+                    ca += p_cat_act_wk[c][i] * 100.0
+                    curr_a = min(cw * 100.0, ca)
+                    if curr_a < last_a:
+                        curr_a = last_a
+                    last_a = curr_a
+                    p_cat_plan_cum[c].append(min(cw * 100.0, cp))
+                    p_cat_act_cum[c].append(curr_a)
+
+            project_cat_data[pid] = {
+                'weeks': p_weeks,
+                'weights': p_cat_weights,
+                'plan_wk': p_cat_plan_wk,
+                'act_wk': p_cat_act_wk,
+                'plan_cum': p_cat_plan_cum,
+                'act_cum': p_cat_act_cum
+            }
+
+        # 2. Category weights in Lot
+        cat_lot_weights = {c: 0.0 for c in cat_names}
+        for p in lot_prjs:
+            p_cap = p.get('capacity_kwp', 0.0)
+            p_ratio = p_cap / total_cap
+            for c in cat_names:
+                cat_lot_weights[c] += project_cat_data[p['id']]['weights'][c] * p_ratio
+
+        # 3. Aggregate onto sorted_weeks for each category
+        cat_lot_plan_cum = {c: [] for c in cat_names}
+        cat_lot_act_cum = {c: [] for c in cat_names}
+        cat_lot_plan_wk = {c: [] for c in cat_names}
+        cat_lot_act_wk = {c: [] for c in cat_names}
+
+        week_labels = []
+        for idx, w_str in enumerate(sorted_weeks):
+            try:
+                parts = w_str.split('-')
+                week_labels.append(f"W{idx+1} ({parts[2]}/{parts[1]}/{parts[0][2:]})")
+            except:
+                week_labels.append(f"W{idx+1}")
+
+            for c in cat_names:
+                w_plan_sum = 0.0
+                w_act_sum = 0.0
+                w_plan_wk_sum = 0.0
+                w_act_wk_sum = 0.0
+
+                for p in lot_prjs:
+                    p_cap = p.get('capacity_kwp', 0.0)
+                    p_data = project_cat_data[p['id']]
+                    pw = p_data['weeks']
+                    pc = p_data['plan_cum'][c]
+                    ac = p_data['act_cum'][c]
+                    pwk = p_data['plan_wk'][c]
+                    awk = p_data['act_wk'][c]
+
+                    if not pw:
+                        val_p, val_a, val_pwk, val_awk = 0.0, 0.0, 0.0, 0.0
+                    elif w_str < pw[0]:
+                        val_p, val_a, val_pwk, val_awk = 0.0, 0.0, 0.0, 0.0
+                    elif w_str in pw:
+                        pi = pw.index(w_str)
+                        val_p = pc[pi] if pi < len(pc) and pc[pi] is not None else 0.0
+                        val_a = ac[pi] if pi < len(ac) and ac[pi] is not None else 0.0
+                        val_pwk = pwk[pi] * 100.0 if pi < len(pwk) else 0.0
+                        val_awk = awk[pi] * 100.0 if pi < len(awk) else 0.0
+                    else:
+                        prior_p = [pc[i] for i, x in enumerate(pw) if x < w_str and pc[i] is not None]
+                        val_p = prior_p[-1] if prior_p else 0.0
+                        prior_a = [ac[i] for i in range(len(ac)) if ac[i] is not None]
+                        val_a = prior_a[-1] if prior_a else 0.0
+                        val_pwk, val_awk = 0.0, 0.0
+
+                    w_plan_sum += val_p * p_cap
+                    w_act_sum += val_a * p_cap
+                    w_plan_wk_sum += val_pwk * p_cap
+                    w_act_wk_sum += val_awk * p_cap
+
+                cat_lot_plan_cum[c].append(round(w_plan_sum / total_cap, 2))
+                cat_lot_act_cum[c].append(round(w_act_sum / total_cap, 2))
+                cat_lot_plan_wk[c].append(round(w_plan_wk_sum / total_cap, 2))
+                cat_lot_act_wk[c].append(round(w_act_wk_sum / total_cap, 2))
+
+        # 4. Enforce monotonic non-decreasing on cumulative actuals per category
+        for c in cat_names:
+            last_val = 0.0
+            for i in range(num_weeks):
+                if cat_lot_act_cum[c][i] < last_val:
+                    cat_lot_act_cum[c][i] = last_val
+                last_val = cat_lot_act_cum[c][i]
+
+        # 5. Build category breakdown by week
+        category_breakdown_by_week = []
+        lot_planned_cum = []
+        lot_actual_cum = []
+
+        today_str = today.strftime('%Y-%m-%d')
+        current_week_idx = 0
+
+        for i in range(num_weeks):
+            w_str = sorted_weeks[i]
+            if today_str >= w_str:
+                current_week_idx = i
+
+            week_cats = []
+            w_tot_plan = 0.0
+            w_tot_act = 0.0
+
+            for c in cat_names:
+                cw = cat_lot_weights[c]
+                cw_pct = round(cw * 100.0, 2)
+                plan_contrib = cat_lot_plan_cum[c][i]
+                act_contrib = cat_lot_act_cum[c][i]
+                var_contrib = round(act_contrib - plan_contrib, 2)
+
+                pct_plan_in_cat = round((plan_contrib / cw_pct * 100.0), 1) if cw_pct > 0 else 0.0
+                pct_act_in_cat = round((act_contrib / cw_pct * 100.0), 1) if cw_pct > 0 else 0.0
+
+                wk_plan = cat_lot_plan_wk[c][i]
+                wk_act = cat_lot_act_wk[c][i]
+                wk_var = round(wk_act - wk_plan, 2)
+
+                short_name = "งานราชการ" if "ขออนุญาต" in c else ("งานออกแบบ" if "ออกแบบ" in c else "งานก่อสร้าง")
+
+                status = "ON_TRACK" if var_contrib >= 0 else ("DELAYED" if var_contrib < -5 else "SLIGHT_DELAY")
+                status_wk = "ON_TRACK" if wk_var >= 0 else ("DELAYED" if wk_var < -1 else "SLIGHT_DELAY")
+
+                week_cats.append({
+                    "category": c,
+                    "short_name": short_name,
+                    "weight_pct": cw_pct,
+                    "planned_contribution_pct": plan_contrib,
+                    "actual_contribution_pct": act_contrib,
+                    "variance_pct": var_contrib,
+                    "cat_planned_pct": pct_plan_in_cat,
+                    "cat_actual_pct": pct_act_in_cat,
+                    "status": status,
+                    "weekly_planned_contribution_pct": wk_plan,
+                    "weekly_actual_contribution_pct": wk_act,
+                    "weekly_variance_pct": wk_var,
+                    "weekly_status": status_wk
+                })
+
+                w_tot_plan += plan_contrib
+                w_tot_act += act_contrib
+
+            category_breakdown_by_week.append(week_cats)
+            lot_planned_cum.append(round(w_tot_plan, 2))
+
+            if max_system_act_date and w_str > max_system_act_date:
+                lot_actual_cum.append(None)
+            else:
+                lot_actual_cum.append(round(w_tot_act, 2))
+
+        latest_breakdown = category_breakdown_by_week[current_week_idx] if current_week_idx < len(category_breakdown_by_week) else category_breakdown_by_week[-1]
+
+        return {
+            "lot": lot or "ALL",
+            "total_sites": len(lot_prjs),
+            "total_capacity_kwp": round(total_cap, 2),
+            "category_breakdown": latest_breakdown,
+            "category_breakdown_by_week": category_breakdown_by_week,
+            "current_week_index": current_week_idx,
+            "scurve": {
+                "weeks": sorted_weeks,
+                "labels": week_labels,
+                "planned_cum": lot_planned_cum,
+                "actual_cum": lot_actual_cum
+            }
+        }
+
+

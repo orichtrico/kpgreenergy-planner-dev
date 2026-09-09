@@ -1,0 +1,36 @@
+[
+  {
+    "id": "ISS-002",
+    "project_id": "prj_137",
+    "site_name": "อสร.หนองจอก",
+    "lot": "LOT4",
+    "week": "สัปดาห์ 08/09/26",
+    "start_date": "2026-09-07",
+    "end_date": null,
+    "category": "งานขออนุญาตราชการ",
+    "description": "แบบผิดไม่มีใครตรวจ",
+    "action_plan": "ให้ลูกค้าตรวจแบบให้เสร็จภายในอาทิตย์หน้า",
+    "status": "IN_PROGRESS",
+    "severity": "MEDIUM",
+    "reported_by": "วิศวกรโครงการ",
+    "created_at": "2026-09-08 00:33:00",
+    "updated_at": "2026-09-08 00:33:00"
+  },
+  {
+    "id": "ISS-001",
+    "project_id": "prj_034",
+    "site_name": "CEE-2",
+    "lot": "Demo lot1",
+    "week": "W10 (02/03/26 - 08/03/26)",
+    "start_date": "2026-03-01",
+    "end_date": null,
+    "category": "สภาพอากาศและสิ่งแวดล้อม",
+    "description": "น้ำท่วมเข้าพื้นที่ไม่ได้",
+    "action_plan": "น้ำรอระบาย",
+    "status": "OPEN",
+    "severity": "MEDIUM",
+    "reported_by": "สมชาย วิศวกรโครงการ",
+    "created_at": "2026-03-01 09:30:00",
+    "updated_at": "2026-09-08 00:30:57"
+  }
+]

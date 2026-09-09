@@ -127,6 +127,38 @@ class MilestoneUpdateRequest(BaseModel):
     password: Optional[str] = None
     sheet_url: Optional[str] = None
 
+class IssueCreateRequest(BaseModel):
+    project_id: Optional[str] = ""
+    site_name: Optional[str] = ""
+    lot: Optional[str] = ""
+    week: Optional[str] = ""
+    start_date: Optional[str] = ""
+    end_date: Optional[str] = None
+    category: Optional[str] = "งานทั่วไป"
+    description: str
+    action_plan: Optional[str] = ""
+    status: Optional[str] = "IN_PROGRESS"
+    severity: Optional[str] = "MEDIUM"
+    reported_by: Optional[str] = "วิศวกรหน้างาน"
+    password: Optional[str] = ""
+
+class IssueUpdateRequest(BaseModel):
+    project_id: Optional[str] = None
+    site_name: Optional[str] = None
+    lot: Optional[str] = None
+    week: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    action_plan: Optional[str] = None
+    status: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    severity: Optional[str] = None
+    reported_by: Optional[str] = None
+    password: Optional[str] = ""
+
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     index_path = os.path.join(STATIC_DIR, "index.html")
@@ -173,6 +205,7 @@ async def get_overview():
     installation_types = sorted(list(set(p.get("installation_type") for p in projects if p.get("installation_type"))))
     
     phases = engine.get_phase_summary()
+    energized_summary = engine.get_energized_summary()
 
     return {
         "total_projects": total_projects,
@@ -187,7 +220,8 @@ async def get_overview():
         "business_units": business_units,
         "lots": lots,
         "installation_types": installation_types,
-        "phases": phases
+        "phases": phases,
+        "energized": energized_summary
     }
 
 @app.get("/api/projects")
@@ -244,6 +278,248 @@ async def get_project_detail(project_id: str):
 @app.get("/api/phases")
 async def get_phases():
     return engine.get_phase_summary()
+
+@app.get("/api/lot-weekly-progress")
+async def get_lot_weekly_progress(lot: Optional[str] = None):
+    # Filter active projects by lot
+    if lot and lot != "ALL":
+        target_projects = [p for p in engine.active_projects if p.get("lot") == lot]
+    else:
+        target_projects = engine.active_projects
+
+    # Get canonical S-curve and category data for this lot
+    lot_scurve_data = engine.get_lot_scurve_and_categories(lot)
+    scurve_info = lot_scurve_data.get("scurve", {})
+    all_weeks = scurve_info.get("weeks", [])
+    all_labels = scurve_info.get("labels", [])
+
+    today_str = date.today().strftime('%Y-%m-%d')
+    current_week_idx = 0
+    for idx, w_date in enumerate(all_weeks):
+        if today_str >= str(w_date)[:10]:
+            current_week_idx = idx
+
+    # Build site list
+    sites = []
+    for p in target_projects:
+        sc = p.get("s_curve", {})
+        pw = sc.get("planned_weekly", [])
+        aw = sc.get("actual_weekly", [])
+        pc = sc.get("planned_cum", [])
+        ac = sc.get("actual_cum", [])
+
+        p_weeks = sc.get("weeks", [])
+        p_week_map = {str(w)[:10]: i for i, w in enumerate(p_weeks)}
+
+        site_pw = []
+        site_aw = []
+        site_pc = []
+        site_ac = []
+
+        last_pc = 0.0
+        last_ac = 0.0
+        for gw in all_weeks:
+            gw_str = str(gw)[:10]
+            if gw_str in p_week_map:
+                pi = p_week_map[gw_str]
+                raw_pw = pw[pi] if pi < len(pw) else 0.0
+                raw_aw = aw[pi] if pi < len(aw) else 0.0
+                raw_pc = pc[pi] if pi < len(pc) else last_pc
+                raw_ac = ac[pi] if pi < len(ac) else last_ac
+                
+                val_pw = float(raw_pw) if raw_pw is not None else 0.0
+                val_aw = float(raw_aw) if raw_aw is not None else 0.0
+                val_pc = float(raw_pc) if raw_pc is not None else last_pc
+                val_ac = float(raw_ac) if raw_ac is not None else last_ac
+                
+                last_pc = val_pc
+                last_ac = val_ac
+            else:
+                val_pw = 0.0
+                val_aw = 0.0
+                val_pc = last_pc
+                val_ac = last_ac
+
+            site_pw.append(round(val_pw, 2))
+            site_aw.append(round(val_aw, 2))
+            site_pc.append(round(val_pc, 2))
+            site_ac.append(round(val_ac, 2))
+
+        sites.append({
+            "id": p["id"],
+            "name": p["name"],
+            "order_no": p.get("order_no"),
+            "lot": p.get("lot"),
+            "business_unit": p.get("business_unit"),
+            "capacity_kwp": p.get("capacity_kwp", 0.0),
+            "planned_progress_pct": p.get("planned_progress_pct", 0.0),
+            "actual_progress_pct": p.get("actual_progress_pct", 0.0),
+            "variance_pct": p.get("variance_pct", 0.0),
+            "status": p.get("status"),
+            "status_th": p.get("status_th"),
+            "weekly_planned": site_pw,
+            "weekly_actual": site_aw,
+            "cumulative_planned": site_pc,
+            "cumulative_actual": site_ac
+        })
+
+    total_sites = len(sites)
+    total_capacity = sum(s["capacity_kwp"] for s in sites)
+    avg_planned = round(sum(s["planned_progress_pct"] * s["capacity_kwp"] for s in sites) / total_capacity, 2) if total_capacity > 0 else 0.0
+    avg_actual = round(sum(s["actual_progress_pct"] * s["capacity_kwp"] for s in sites) / total_capacity, 2) if total_capacity > 0 else 0.0
+
+
+    return {
+        "lot": lot or "ALL",
+        "total_sites": total_sites,
+        "total_capacity_kwp": round(total_capacity, 2),
+        "total_capacity_mwp": round(total_capacity / 1000.0, 2),
+        "avg_planned_progress_pct": avg_planned,
+        "avg_actual_progress_pct": avg_actual,
+        "variance_pct": round(avg_actual - avg_planned, 2),
+        "weeks": [str(w)[:10] for w in all_weeks],
+        "week_labels": all_labels,
+        "current_week_index": current_week_idx,
+        "sites": sites,
+        "category_breakdown": lot_scurve_data.get("category_breakdown", []),
+        "category_breakdown_by_week": lot_scurve_data.get("category_breakdown_by_week", []),
+        "scurve": lot_scurve_data.get("scurve", {})
+    }
+
+@app.get("/api/issues")
+async def get_issues_endpoint(
+    lot: Optional[str] = None,
+    project_id: Optional[str] = None,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None
+):
+    issues = engine.get_issues(lot=lot, project_id=project_id, status=status, category=category, search=search)
+    total_issues = len(engine.issues)
+    open_count = sum(1 for i in engine.issues if i.get("status") in ["OPEN", "IN_PROGRESS"])
+    resolved_count = sum(1 for i in engine.issues if i.get("status") == "RESOLVED")
+    high_sev_count = sum(1 for i in engine.issues if i.get("severity") == "HIGH" and i.get("status") in ["OPEN", "IN_PROGRESS"])
+    affected_sites_count = len(set(i.get("project_id") for i in engine.issues if i.get("project_id") and i.get("status") in ["OPEN", "IN_PROGRESS"]))
+    
+    return {
+        "issues": issues,
+        "total": len(issues),
+        "summary": {
+            "total_all": total_issues,
+            "open_issues": open_count,
+            "resolved_issues": resolved_count,
+            "high_severity_open": high_sev_count,
+            "affected_sites": affected_sites_count
+        }
+    }
+
+@app.post("/api/issues")
+async def create_issue_endpoint(req: IssueCreateRequest):
+    if req.password != EDITOR_PASSWORD and req.reported_by != "LINE LIFF User":
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่ 'KPGEditor'")
+    if not req.description.strip():
+        raise HTTPException(status_code=400, detail="กรุณาระบุคำอธิบายปัญหา")
+    
+    new_issue = engine.add_issue(req.dict())
+    notify_data_updated()
+    
+    # Sync to Google Sheet Web App if configured
+    target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+    gsheet_synced = False
+    if target_write_url:
+        try:
+            payload = {
+                "action": "add_issue",
+                "issue": new_issue,
+                "updated_by": req.reported_by or "Web User"
+            }
+            gs_resp = requests.post(target_write_url, json=payload, timeout=8, allow_redirects=True)
+            if gs_resp.status_code == 200:
+                gsheet_synced = True
+        except Exception as e:
+            print(f"[Warning] Failed to sync issue to Google Sheet: {e}")
+            
+    return {
+        "success": True,
+        "message": f"บันทึกรายงานปัญหา {new_issue['id']} สำเร็จเรียบร้อย",
+        "issue": new_issue,
+        "gsheet_synced": gsheet_synced
+    }
+
+@app.post("/api/issues/{issue_id}/update")
+async def update_issue_endpoint(issue_id: str, req: IssueUpdateRequest):
+    if req.password != EDITOR_PASSWORD and req.reported_by != "LINE LIFF User":
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่ 'KPGEditor'")
+    
+    updates = {}
+    if req.project_id is not None:
+        updates["project_id"] = req.project_id
+    if req.site_name is not None:
+        updates["site_name"] = req.site_name
+    if req.lot is not None:
+        updates["lot"] = req.lot
+    if req.week is not None:
+        updates["week"] = req.week
+    if req.start_date is not None:
+        updates["start_date"] = req.start_date
+    if req.end_date is not None:
+        updates["end_date"] = req.end_date if req.end_date != "" else None
+    if req.action_plan is not None:
+        updates["action_plan"] = req.action_plan
+    if req.status is not None:
+        updates["status"] = req.status
+    if req.description is not None:
+        updates["description"] = req.description
+    if req.category is not None:
+        updates["category"] = req.category
+    if req.severity is not None:
+        updates["severity"] = req.severity
+    if req.reported_by is not None:
+        updates["reported_by"] = req.reported_by
+        
+    updated = engine.update_issue(issue_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="ไม่พบรหัสปัญหานี้ในระบบ")
+        
+    notify_data_updated()
+    
+    # Sync to Google Sheet Web App if configured
+    target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+    if target_write_url:
+        try:
+            payload = {
+                "action": "update_issue",
+                "issue": updated,
+                "updated_by": req.reported_by or "Web User"
+            }
+            requests.post(target_write_url, json=payload, timeout=8, allow_redirects=True)
+        except Exception as e:
+            print(f"[Warning] Failed to sync issue update to Google Sheet: {e}")
+
+    return {
+        "success": True,
+        "message": f"อัปเดตปัญหา {issue_id} เรียบร้อยแล้ว",
+        "issue": updated
+    }
+
+@app.delete("/api/issues/{issue_id}")
+async def delete_issue_endpoint(issue_id: str, request: Request):
+    pwd = None
+    try:
+        data = await request.json()
+        pwd = data.get("password")
+    except:
+        pwd = request.query_params.get("password")
+        
+    if pwd != EDITOR_PASSWORD:
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่ 'KPGEditor'")
+        
+    success = engine.delete_issue(issue_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="ไม่พบรายการปัญหาที่จะลบ")
+        
+    notify_data_updated()
+    return {"success": True, "message": f"ลบรายการปัญหา {issue_id} สำเร็จ"}
 
 @app.post("/api/update-milestone")
 async def update_milestone(req: MilestoneUpdateRequest):
@@ -457,6 +733,19 @@ async def handle_webhook(request: Request):
                 "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"],
                 "version": DATA_VERSION
             }
+
+    if action in ["add_issue", "create_issue"]:
+        issue_data = body.get("issue") or body
+        new_iss = engine.add_issue(issue_data)
+        notify_data_updated()
+        return {"status": "ok", "action": "add_issue", "issue": new_iss, "version": DATA_VERSION}
+
+    if action in ["update_issue", "resolve_issue"]:
+        issue_id = body.get("issue_id") or (body.get("issue") or {}).get("id")
+        updates = body.get("updates") or body.get("issue") or body
+        updated_iss = engine.update_issue(issue_id, updates)
+        notify_data_updated()
+        return {"status": "ok", "action": "update_issue", "issue": updated_iss, "version": DATA_VERSION}
             
     return {"status": "received", "body": body}
 
@@ -571,4 +860,4 @@ async def get_gas_code():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=port)

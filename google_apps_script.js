@@ -176,7 +176,71 @@ function doPost(e) {
       return handleUpdateMilestone(data);
     }
 
+    if (data && (data.action === 'add_issue' || data.action === 'update_issue')) {
+      return handleIssueSync(data);
+    }
+
     return createJsonResponse({ status: 'error', message: 'Invalid action' });
+  } catch (err) {
+    return createJsonResponse({ status: 'error', message: err.toString() });
+  }
+}
+
+/**
+ * บันทึกปัญหาลงในชีต Weekly_Issues
+ */
+function handleIssueSync(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let issueSheet = ss.getSheetByName('Weekly_Issues') || ss.getSheetByName('Issues');
+    if (!issueSheet) {
+      issueSheet = ss.insertSheet('Weekly_Issues');
+      const headers = ['Issue ID', 'Project ID', 'Site Name', 'Lot', 'Report Week', 'Start Date', 'End Date', 'Category', 'Description', 'Action Plan', 'Status', 'Severity', 'Reported By', 'Updated At'];
+      issueSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      issueSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#e2e8f0');
+      issueSheet.setFrozenRows(1);
+    }
+    
+    const issue = data.issue || data;
+    const issueId = String(issue.id || '').trim();
+    if (!issueId) return createJsonResponse({ status: 'error', message: 'Missing issue id' });
+    
+    const lastRow = issueSheet.getLastRow();
+    let foundRow = -1;
+    if (lastRow > 1) {
+      const idColValues = issueSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < idColValues.length; i++) {
+        if (String(idColValues[i][0]).trim() === issueId) {
+          foundRow = i + 2;
+          break;
+        }
+      }
+    }
+    
+    const rowValues = [
+      issue.id,
+      issue.project_id || '',
+      issue.site_name || '',
+      issue.lot || '',
+      issue.week || '',
+      issue.start_date || '',
+      issue.end_date || '',
+      issue.category || '',
+      issue.description || '',
+      issue.action_plan || '',
+      issue.status || '',
+      issue.severity || '',
+      issue.reported_by || '',
+      new Date().toISOString()
+    ];
+    
+    if (foundRow > 0) {
+      issueSheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
+    } else {
+      issueSheet.appendRow(rowValues);
+    }
+    
+    return createJsonResponse({ status: 'success', message: 'Issue saved to Google Sheet', issue_id: issueId });
   } catch (err) {
     return createJsonResponse({ status: 'error', message: err.toString() });
   }
