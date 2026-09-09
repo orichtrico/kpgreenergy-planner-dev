@@ -377,3 +377,33 @@ function testWebhook() {
   notifyWebDashboard(payload);
   Logger.log('✅ ทดสอบส่ง Webhook เสร็จสิ้น! ตรวจสอบที่หน้าเว็บ Render ได้เลย');
 }
+
+/**
+ * ฟังก์ชันทดสอบสร้างแท็บชีต Weekly_Issues ใน Google Sheet ทันที
+ * สามารถเลือกฟังก์ชันนี้แล้วกด 'เรียกใช้' (Run) ใน Apps Script จะมีแท็บ Weekly_Issues โผล่มาที่ด้านล่างของชีตทันที
+ */
+function testCreateIssueSheet() {
+  const testData = {
+    action: 'add_issue',
+    issue: {
+      id: 'ISS-TEST-001',
+      project_id: '1',
+      site_name: 'ตัวอย่างไซต์งาน',
+      lot: 'Lot 1',
+      week: 'W1',
+      start_date: Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd'),
+      end_date: '',
+      category: 'งานก่อสร้าง',
+      description: 'ทดสอบการสร้างชีตและบันทึกปัญหาลงในแท็บ Weekly_Issues',
+      action_plan: 'ตรวจสอบความถูกต้องของหัวคอลัมน์',
+      status: 'In Progress',
+      severity: 'Medium',
+      reported_by: 'ผู้ดูแลระบบ'
+    }
+  };
+  Logger.log('🚀 กำลังสร้างแท็บ Weekly_Issues และบันทึกแถวทดสอบ...');
+  const res = handleIssueSync(testData);
+  Logger.log('ผลลัพธ์: ' + JSON.stringify(res));
+  Logger.log('✅ ดูที่แถบด้านล่างสุดของ Google Sheet จะมีแท็บแผ่นงานชื่อ "Weekly_Issues" เพิ่มขึ้นมาแล้วครับ!');
+}
+

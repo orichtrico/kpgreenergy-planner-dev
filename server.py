@@ -20,7 +20,7 @@ app = FastAPI(title="KPGreenergy Planner", version="1.0.0")
 
 # Security Password for editing
 EDITOR_PASSWORD = "KPGEditor"
-DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec"
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyVEcTkGnVKxvsmEvMxrKXvBrafWOG3ZzpNsqDMeChSd2JiQhRmjK9jRj-gisF97YEpeA/exec"
 
 # Enable CORS
 app.add_middleware(
@@ -433,7 +433,7 @@ async def create_issue_endpoint(req: IssueCreateRequest):
                 "issue": new_issue,
                 "updated_by": req.reported_by or "Web User"
             }
-            gs_resp = requests.post(target_write_url, json=payload, timeout=8, allow_redirects=True)
+            gs_resp = requests.post(target_write_url, json=payload, timeout=15, allow_redirects=True)
             if gs_resp.status_code == 200:
                 gsheet_synced = True
         except Exception as e:
@@ -492,7 +492,7 @@ async def update_issue_endpoint(issue_id: str, req: IssueUpdateRequest):
                 "issue": updated,
                 "updated_by": req.reported_by or "Web User"
             }
-            requests.post(target_write_url, json=payload, timeout=8, allow_redirects=True)
+            requests.post(target_write_url, json=payload, timeout=15, allow_redirects=True)
         except Exception as e:
             print(f"[Warning] Failed to sync issue update to Google Sheet: {e}")
 

@@ -8,7 +8,7 @@ from typing import Dict, List, Any, Optional
 EXCEL_PATH = r'C:\Users\siray\Downloads\Weekly Progress R2.xlsx'
 CACHE_PATH = os.path.join(os.path.dirname(__file__), 'data_cache.json')
 BACKUP_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'data_cache_backup.json')
-DEFAULT_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwSbMxBfzkOWgXMA9OwZpu6-Y18Ap0mX1DFgXkZYvQ6P3NrKYpI4kKsxgz2LIEb6QmQ/exec'
+DEFAULT_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbyVEcTkGnVKxvsmEvMxrKXvBrafWOG3ZzpNsqDMeChSd2JiQhRmjK9jRj-gisF97YEpeA/exec'
 
 def format_date(dt):
     if dt is None or dt == "-" or dt == "":

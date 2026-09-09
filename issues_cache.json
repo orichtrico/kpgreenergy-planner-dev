@@ -1,5 +1,22 @@
 [
   {
+    "id": "ISS-003",
+    "project_id": "1",
+    "site_name": "CEE-1",
+    "lot": "Lot AG",
+    "week": "W71",
+    "start_date": "2026-09-10",
+    "end_date": null,
+    "category": "งานก่อสร้าง",
+    "description": "ทดสอบบันทึกปัญหาผ่าน Server API เข้า Google Sheet",
+    "action_plan": "ตรวจสอบชีต Weekly_Issues",
+    "status": "Open",
+    "severity": "High",
+    "reported_by": "Admin",
+    "created_at": "2026-09-10 01:09:47",
+    "updated_at": "2026-09-10 01:09:47"
+  },
+  {
     "id": "ISS-002",
     "project_id": "prj_137",
     "site_name": "อสร.หนองจอก",
