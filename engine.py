@@ -1179,9 +1179,39 @@ class ProjectEngine:
             if prj_has_change:
                 changed_projects_count += 1
                 self.recalculate_project_metrics(target_prj)
-                
+
+        # 🛡️ AUTOMATIC DELETION PRUNING:
+        # Collect all project names present in the live Google Sheet CSV
+        sheet_project_names = set()
+        for r_idx in range(5, len(rows)):
+            row = rows[r_idx]
+            if len(row) >= 4:
+                n = row[3].strip().lower()
+                if n:
+                    sheet_project_names.add(n)
+                    sheet_project_names.add("".join(n.split()))
+
+        # Remove any project from local cache that no longer exists in Google Sheet
+        projects_to_keep = []
+        deleted_count = 0
+        for p in self.all_projects:
+            p_name = p.get("name", "").strip().lower()
+            p_nospace = "".join(p_name.split())
+            if p_name in sheet_project_names or p_nospace in sheet_project_names:
+                projects_to_keep.append(p)
+            else:
+                deleted_count += 1
+                print(f"[SheetSync Prune] Removing project '{p.get('name')}' (no longer in Google Sheet)")
+
+        if deleted_count > 0:
+            self.all_projects = projects_to_keep
+            self.projects_dict = {p['id']: p for p in self.all_projects}
+            self.active_projects = [p for p in self.all_projects if not self.is_cc_project(p)]
+            self.projects = self.active_projects
+            changed_projects_count += deleted_count
+
         if changed_projects_count > 0:
-            print(f"[Engine] Synced and updated {changed_projects_count} changed projects from Google Sheet.")
+            print(f"[Engine] Synced and updated {changed_projects_count} changed/pruned projects from Google Sheet.")
             self.save_to_cache()
             
         return changed_projects_count
