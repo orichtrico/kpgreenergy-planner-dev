@@ -5,10 +5,14 @@ import openpyxl
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Any, Optional
 
-EXCEL_PATH = r'C:\Users\siray\Downloads\Weekly Progress R2.xlsx'
+EXCEL_PATH = os.environ.get('EXCEL_PATH', os.path.join(os.path.dirname(__file__), 'Weekly Progress R2.xlsx'))
 CACHE_PATH = os.path.join(os.path.dirname(__file__), 'data_cache.json')
 BACKUP_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'data_cache_backup.json')
-DEFAULT_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbyVEcTkGnVKxvsmEvMxrKXvBrafWOG3ZzpNsqDMeChSd2JiQhRmjK9jRj-gisF97YEpeA/exec'
+DEFAULT_SHEET_ID = os.environ.get('GOOGLE_SHEET_ID', '1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y')
+DEFAULT_WEBAPP_URL = os.environ.get(
+    'DEFAULT_WEBAPP_URL',
+    'https://script.google.com/macros/s/AKfycbx139TsQvyxZslZKF0wmHRI0EuXWaRVaU0Vt5TthJvyWevkMCZ57S_alqHTOgELQEMs4A/exec'
+)
 
 def format_date(dt):
     if dt is None or dt == "-" or dt == "":
@@ -44,6 +48,29 @@ def parse_date(d_str):
                 pass
     return None
 
+def safe_parse_progress_pct(val, fallback: float = 0.0) -> float:
+    """
+    Safely parse percentage in all possible formats without wiping to 0.0%.
+    """
+    if val is None:
+        return fallback
+    if isinstance(val, (int, float)):
+        v = float(val)
+        return v / 100.0 if v > 1.0 else max(0.0, min(1.0, v))
+    s = str(val).strip()
+    if not s or s == "-":
+        return fallback
+    clean = s.replace("%", "").replace(" ", "").strip()
+    if "," in clean and "." not in clean:
+        clean = clean.replace(",", ".")
+    elif "," in clean and "." in clean:
+        clean = clean.replace(",", "")
+    try:
+        v = float(clean)
+        return v / 100.0 if v > 1.0 else max(0.0, min(1.0, v))
+    except (ValueError, TypeError):
+        return fallback
+
 class ProjectEngine:
     @staticmethod
     def is_cc_project(p: dict) -> bool:
@@ -66,6 +93,8 @@ class ProjectEngine:
         self.google_sheet_webapp_url = ''
         self.issues_path = os.path.join(os.path.dirname(cache_path), 'issues_cache.json')
         self.issues = []
+        self.photos_path = os.path.join(os.path.dirname(cache_path), 'photos_cache.json')
+        self.photos = {}
         
         # Load from cache first
         if not self.load_from_cache():
@@ -75,6 +104,7 @@ class ProjectEngine:
             else:
                 print(f"[Engine Warning] Neither valid cache nor Excel file found.")
         self.load_issues_cache()
+        self.load_photos_cache()
 
     def load_from_cache(self) -> bool:
         # Try primary cache
@@ -190,11 +220,13 @@ class ProjectEngine:
                         self.weight_matrix[t_num][m_name] = w_float
 
     def _load_projects(self, wb):
-        if 'Plan' not in wb.sheetnames:
+        plan_sheet_name = next((s for s in ['MASTER', 'Master', 'Plan', 'PLAN', 'Master Plan'] if s in wb.sheetnames), None)
+        if not plan_sheet_name:
             return
         
-        ws_plan = wb['Plan']
-        ws_prog = wb['data Progress'] if 'data Progress' in wb.sheetnames else None
+        ws_plan = wb[plan_sheet_name]
+        prog_sheet_name = next((s for s in ['data Progress', 'Progress', 'PROGRESS', 'Data Progress'] if s in wb.sheetnames), None)
+        ws_prog = wb[prog_sheet_name] if prog_sheet_name else None
         
         plan_milestones_cols = []
         c = 8
@@ -565,6 +597,258 @@ class ProjectEngine:
             
         return sorted(result, key=lambda x: x["lot"])
 
+    def calculate_planned_progress_today(self, milestones: list) -> float:
+        """
+        Calculates the expected cumulative planned progress percentage as of today
+        based on the milestone schedule and weights.
+        """
+        today = date.today()
+        total_planned = 0.0
+        for m in milestones:
+            p_s = parse_date(m.get("planned_start"))
+            p_f = parse_date(m.get("planned_finish"))
+            w = m.get("weight", 0.0)
+            if p_s and p_f and w > 0:
+                if today >= p_f:
+                    total_planned += w
+                elif today <= p_s:
+                    total_planned += 0.0
+                else:
+                    total_days = (p_f - p_s).days or 1
+                    elapsed_days = (today - p_s).days
+                    pct = min(1.0, max(0.0, elapsed_days / total_days))
+                    total_planned += pct * w
+        return round(min(100.0, total_planned * 100.0), 2)
+
+    def resolve_type_code(self, installation_type: str, capacity_kwp: float, voltage_level: str = "LV") -> int:
+        """
+        Resolves the 1..42 Type Code according to sheet 'Cal Progress' based on:
+        - Installation Type (Roof, Car park, Farm, Floating, Fishery)
+        - Voltage Level (LV vs MV)
+        - Capacity (kWp) - Tier 1 (<250), Tier 2 (250-999), Tier 3 (>=1000)
+        """
+        it = str(installation_type or '').strip().lower()
+        cap = float(capacity_kwp or 100.0)
+        vl = str(voltage_level or 'LV').strip().upper()
+        is_mv = (vl == 'MV')
+
+        if 'roof' in it and 'car' not in it:
+            if not is_mv:
+                return 1 if cap < 250 else (2 if cap < 1000 else 3)
+            else:
+                return 22 if cap < 250 else (23 if cap < 1000 else 24)
+        elif 'car' in it:
+            if not is_mv:
+                return 19 if cap < 250 else (20 if cap < 1000 else 21)
+            else:
+                return 40 if cap < 250 else (41 if cap < 1000 else 42)
+        elif 'farm' in it and 'float' not in it:
+            if not is_mv:
+                return 4 if cap < 250 else (7 if cap < 1000 else 8)
+            else:
+                return 25 if cap < 250 else (28 if cap < 1000 else 29)
+        elif 'fish' in it or 'บ่อ' in it:
+            if not is_mv:
+                return 9 if cap < 250 else (12 if cap < 1000 else 13)
+            else:
+                return 30 if cap < 250 else (33 if cap < 1000 else 34)
+        elif 'float' in it:
+            if 'farm' in it:
+                return 39 if is_mv else 18
+            if not is_mv:
+                return 14 if cap < 250 else (17 if cap < 1000 else 18)
+            else:
+                return 35 if cap < 250 else (38 if cap < 1000 else 39)
+        return 1
+
+    def add_new_project(self, data: dict, trigger_cache_save: bool = True) -> dict:
+        """
+        Creates and registers a new solar project with 33 milestones, weights based on type_code,
+        staggered milestone planned dates, initial S-Curve, and atomic cache persistence.
+        """
+        name = str(data.get("name", "")).strip()
+        if not name:
+            raise ValueError("Project name is required")
+
+        # Check for existing project with exact name (case-insensitive)
+        clean_name = name.lower()
+        for p in self.all_projects:
+            if p.get("name", "").strip().lower() == clean_name:
+                print(f"[Engine] Project '{name}' already exists with ID {p.get('id')}")
+                return p
+
+        # Determine next project ID (prj_XXX)
+        existing_ids = []
+        for p in self.all_projects:
+            pid = str(p.get("id", ""))
+            if pid.startswith("prj_"):
+                num_part = pid.replace("prj_", "")
+                if num_part.isdigit():
+                    existing_ids.append(int(num_part))
+        next_num = (max(existing_ids) + 1) if existing_ids else (len(self.all_projects) + 1)
+        project_id = f"prj_{next_num:03d}"
+
+        # Determine order_no
+        order_no = data.get("order_no")
+        if order_no is not None and str(order_no).strip():
+            try:
+                order_no = int(order_no)
+            except (ValueError, TypeError):
+                order_no = str(order_no).strip()
+        else:
+            existing_orders = [int(p["order_no"]) for p in self.all_projects if str(p.get("order_no", "")).isdigit()]
+            order_no = (max(existing_orders) + 1) if existing_orders else next_num
+
+        # Basic fields
+        bu = str(data.get("business_unit", "ทั่วไป")).strip() or "ทั่วไป"
+        lot = str(data.get("lot", "Lot 1")).strip() or "Lot 1"
+        
+        try:
+            capacity_kwp = round(float(data.get("capacity_kwp", 100.0)), 2)
+        except:
+            capacity_kwp = 100.0
+
+        installation = str(data.get("installation_type", "Solar Rooftop")).strip() or "Solar Rooftop"
+        voltage_level = str(data.get("voltage_level", "LV")).strip().upper()
+        if voltage_level not in ("LV", "MV"):
+            voltage_level = "MV" if capacity_kwp > 500.0 else "LV"
+
+        try:
+            raw_type_code = data.get("type_code")
+            if raw_type_code is not None and str(raw_type_code).strip() not in ("", "0"):
+                type_code = int(raw_type_code)
+            else:
+                type_code = self.resolve_type_code(installation, capacity_kwp, voltage_level)
+        except:
+            type_code = self.resolve_type_code(installation, capacity_kwp, voltage_level)
+
+        # Planned dates setup
+        planned_start_str = data.get("planned_start")
+        planned_finish_str = data.get("planned_finish")
+
+        p_s_date = parse_date(planned_start_str) or date.today()
+        p_f_date = parse_date(planned_finish_str) or (p_s_date + timedelta(days=90))
+        if p_f_date <= p_s_date:
+            p_f_date = p_s_date + timedelta(days=90)
+
+        planned_start = p_s_date.strftime('%Y-%m-%d')
+        planned_finish = p_f_date.strftime('%Y-%m-%d')
+        total_duration = max(14, (p_f_date - p_s_date).days)
+
+        # Build 33 milestones matching type_code weights
+        weights = self.weight_matrix.get(type_code, self.weight_matrix.get(1, {}))
+        milestones = []
+        num_m = len(self.milestone_names) or 33
+
+        # Map any custom milestone dates/weights passed by user
+        custom_ms_map = {}
+        if "milestones" in data and isinstance(data["milestones"], list):
+            for m_item in data["milestones"]:
+                if isinstance(m_item, dict):
+                    idx = m_item.get("index")
+                    m_custom_name = m_item.get("name")
+                    p_f = m_item.get("planned_finish")
+                    p_s = m_item.get("planned_start")
+                    p_w = m_item.get("weight")
+                    info = {"planned_finish": p_f, "planned_start": p_s, "weight": p_w}
+                    if idx is not None:
+                        custom_ms_map[int(idx)] = info
+                    elif m_custom_name:
+                        custom_ms_map[m_custom_name.strip().lower()] = info
+
+        for i, m_name in enumerate(self.milestone_names):
+            category = self.milestone_categories.get(m_name, "งานทั่วไป")
+            w = weights.get(m_name, 0.0)
+
+            # Default staggered dates
+            offset_pct = (i / max(1, num_m - 1)) * 0.75
+            dur_pct = 0.25
+            m_s = p_s_date + timedelta(days=int(total_duration * offset_pct))
+            m_f = min(p_f_date, m_s + timedelta(days=max(5, int(total_duration * dur_pct))))
+            if i == num_m - 1:
+                m_f = p_f_date
+
+            # Override with custom date / weight if provided
+            custom_info = custom_ms_map.get(i) or custom_ms_map.get(m_name.strip().lower())
+            if custom_info:
+                if custom_info.get("planned_finish"):
+                    cf = parse_date(custom_info["planned_finish"])
+                    if cf:
+                        m_f = cf
+                if custom_info.get("planned_start"):
+                    cs = parse_date(custom_info["planned_start"])
+                    if cs:
+                        m_s = cs
+                if custom_info.get("weight") is not None:
+                    try:
+                        custom_w = float(custom_info["weight"])
+                        if custom_w > 1.0:
+                            custom_w = custom_w / 100.0
+                        w = max(0.0, custom_w)
+                    except:
+                        pass
+
+            milestones.append({
+                "name": m_name,
+                "category": category,
+                "weight": round(w, 4),
+                "planned_start": m_s.strftime('%Y-%m-%d'),
+                "planned_finish": m_f.strftime('%Y-%m-%d'),
+                "actual_start": None,
+                "actual_finish": None,
+                "actual_pct": 0.0,
+                "actual_contribution": 0.0,
+                "status": "PENDING"
+            })
+
+        planned_today = self.calculate_planned_progress_today(milestones)
+        variance = round(0.0 - planned_today, 2)
+        if variance >= 0:
+            status = "ON_TRACK"
+            status_th = "ตามแผนงาน"
+        elif variance >= -10:
+            status = "SLIGHT_DELAY"
+            status_th = "ล่าช้าเล็กน้อย"
+        else:
+            status = "DELAYED"
+            status_th = "ล่าช้ากว่าแผน"
+
+        prj_obj = {
+            "id": project_id,
+            "business_unit": bu,
+            "order_no": order_no,
+            "name": name,
+            "lot": lot,
+            "capacity_kwp": capacity_kwp,
+            "installation_type": installation,
+            "voltage_level": voltage_level,
+            "type_code": type_code,
+            "planned_start": planned_start,
+            "planned_finish": planned_finish,
+            "actual_start": None,
+            "actual_finish": None,
+            "actual_progress_pct": 0.0,
+            "planned_progress_pct": planned_today,
+            "variance_pct": variance,
+            "status": status,
+            "status_th": status_th,
+            "milestones": milestones
+        }
+
+        # Calculate initial S-Curve
+        prj_obj["s_curve"] = self.generate_project_scurve(prj_obj)
+
+        self.all_projects.append(prj_obj)
+        self.projects_dict[project_id] = prj_obj
+        self.active_projects = [p for p in self.all_projects if not self.is_cc_project(p)]
+        self.projects = self.active_projects
+
+        if trigger_cache_save:
+            self.save_to_cache()
+
+        print(f"[Engine] Successfully created new project {project_id} ('{name}') in Lot '{lot}' with 33 milestones.")
+        return prj_obj
+
     def recalculate_project_metrics(self, prj: dict):
         """
         Recalculates progress %, status, variance %, and actual_start / actual_finish dates
@@ -575,6 +859,8 @@ class ProjectEngine:
         milestones = prj.get("milestones", [])
         total_act = sum(m["actual_contribution"] for m in milestones)
         prj["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
+        if "planned_progress_pct" not in prj or prj["planned_progress_pct"] is None:
+            prj["planned_progress_pct"] = self.calculate_planned_progress_today(milestones)
         prj["variance_pct"] = round(prj["actual_progress_pct"] - prj["planned_progress_pct"], 2)
         
         if prj["actual_progress_pct"] >= 99.9:
@@ -619,7 +905,8 @@ class ProjectEngine:
 
     def update_milestone(self, project_id: str, milestone_name: str = "", actual_pct: float = 0.0, 
                          actual_start: Optional[str] = None, actual_finish: Optional[str] = None,
-                         milestone_index: Optional[int] = None) -> bool:
+                         milestone_index: Optional[int] = None,
+                         planned_start: Optional[str] = None, planned_finish: Optional[str] = None) -> bool:
         if project_id not in self.projects_dict:
             return False
             
@@ -665,6 +952,11 @@ class ProjectEngine:
         target_m["actual_pct"] = max(0.0, min(1.0, actual_pct))
         if actual_start:
             target_m["actual_start"] = actual_start
+
+        if planned_start:
+            target_m["planned_start"] = planned_start
+        if planned_finish:
+            target_m["planned_finish"] = planned_finish
             
         # User Rule: If actual_pct < 100%, do not display/keep finish date
         if target_m["actual_pct"] >= 1.0:
@@ -677,6 +969,14 @@ class ProjectEngine:
         target_m["last_webhook_edit"] = time.time()
         prj["last_webhook_edit"] = time.time()
         
+        # Update overall planned finish / start of project if milestones changed
+        p_dates = [parse_date(m.get("planned_finish")) for m in prj.get("milestones", []) if parse_date(m.get("planned_finish"))]
+        if p_dates:
+            prj["planned_finish"] = max(p_dates).strftime('%Y-%m-%d')
+        p_s_dates = [parse_date(m.get("planned_start")) for m in prj.get("milestones", []) if parse_date(m.get("planned_start"))]
+        if p_s_dates:
+            prj["planned_start"] = min(p_s_dates).strftime('%Y-%m-%d')
+
         self.recalculate_project_metrics(prj)
         self.save_to_cache()
         return True
@@ -698,7 +998,16 @@ class ProjectEngine:
                     break
                     
             if not target_prj:
-                continue
+                print(f"[BatchSync Ingest] Auto-ingesting new project from sheet data: '{p_name}'")
+                target_prj = self.add_new_project({
+                    "name": p_name,
+                    "order_no": p_order,
+                    "lot": "Lot 1",
+                    "capacity_kwp": 100.0,
+                    "installation_type": "Solar Rooftop",
+                    "type_code": 1
+                }, trigger_cache_save=False)
+                updated_projects += 1
                 
             m_idx = 0
             for c in range(7, len(row), 3):
@@ -731,7 +1040,7 @@ class ProjectEngine:
                 m_idx += 1
                 
             self.recalculate_project_metrics(target_prj)
-    def sync_from_google_sheet_csv(self, sheet_id: str = '1ERBqRnmVGYi7JCqzqTbJMmeh41ShAHWfBmLJW96IC7Y', gid: str = '669434805') -> int:
+    def sync_from_google_sheet_csv(self, sheet_id: str = DEFAULT_SHEET_ID, gid: str = '669434805') -> int:
         """
         Directly fetches latest CSV from Google Sheet and syncs projects & milestones.
         Optimized with diff-checking (1700x speedup) and stale CSV protection to prevent recent live edits from disappearing.
@@ -788,7 +1097,24 @@ class ProjectEngine:
                         break
                         
             if not target_prj:
-                continue
+                # Approach A: Auto-ingest newly added project from Google Sheet
+                print(f"[SheetSync Ingest] Auto-ingesting new project from Google Sheet: '{name_str}' (Order: {order_str})")
+                new_lot = row[4].strip() if len(row) > 4 and row[4].strip() else "Lot 1"
+                new_cap = 100.0
+                if len(row) > 5 and row[5].strip():
+                    try:
+                        new_cap = float(row[5].strip().replace(',', ''))
+                    except:
+                        new_cap = 100.0
+                target_prj = self.add_new_project({
+                    "name": name_str,
+                    "order_no": order_str,
+                    "lot": new_lot,
+                    "capacity_kwp": new_cap,
+                    "installation_type": "Solar Rooftop",
+                    "type_code": 1
+                }, trigger_cache_save=False)
+                changed_projects_count += 1
                 
             milestones = target_prj.get("milestones", [])
             prj_has_change = False
@@ -800,22 +1126,17 @@ class ProjectEngine:
                     raw_finish = row[col_base + 1].strip()
                     raw_pct = row[col_base + 2].strip()
                     
-                    pct_val = 0.0
-                    if raw_pct:
-                        try:
-                            clean_pct = raw_pct.replace('%', '').replace(',', '').strip()
-                            p_float = float(clean_pct)
-                            pct_val = p_float / 100.0 if p_float > 1.0 else p_float
-                        except:
-                            pct_val = 0.0
-                            
                     m = milestones[m_idx]
+                    pct_val = safe_parse_progress_pct(raw_pct, fallback=m.get("actual_pct", 0.0))
                     
                     # 🛡️ STALE CSV PROTECTION:
-                    # If this milestone was edited via live webhook within 10 minutes (600s),
-                    # and the CSV returns an older/zero value, DO NOT OVERWRITE with lagged CSV!
+                    # If this milestone was edited via live webhook or web app within 15 minutes (900s),
+                    # or is pending in sync_manager, DO NOT OVERWRITE with lagged CSV!
                     last_edit = m.get("last_webhook_edit", 0)
-                    if (now_ts - last_edit) < 600 and abs(m.get("actual_pct", 0.0) - pct_val) > 0.001:
+                    is_protected = False
+                    if getattr(self, "sync_manager", None):
+                        is_protected = self.sync_manager.is_milestone_protected(target_prj["id"], m.get("name", ""))
+                    if (is_protected or (now_ts - last_edit) < 900) and abs(m.get("actual_pct", 0.0) - pct_val) > 0.001:
                         continue
                         
                     # Parse dates
@@ -914,17 +1235,55 @@ class ProjectEngine:
         results.sort(key=sort_key, reverse=False)
         return results
 
+    def set_issues_from_sheet(self, issues_list: List[Dict[str, Any]]):
+        """
+        Cleanly synchronizes issues directly from Google Sheet Weekly_Issues without creating duplicates.
+        """
+        if not isinstance(issues_list, list):
+            return
+        
+        valid_issues = []
+        for iss in issues_list:
+            if isinstance(iss, dict) and iss.get("id"):
+                valid_issues.append(iss)
+                
+        self.issues = valid_issues
+        self.save_issues_cache()
+
     def add_issue(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        existing_nums = []
-        for item in self.issues:
-            iid = str(item.get("id", ""))
-            if iid.startswith("ISS-"):
-                try:
-                    existing_nums.append(int(iid.split("-")[1]))
-                except:
-                    pass
-        next_num = (max(existing_nums) + 1) if existing_nums else 1
-        new_id = f"ISS-{next_num:03d}"
+        req_id = str(data.get("id", "")).strip()
+        p_id = str(data.get("project_id", "")).strip()
+        
+        if req_id:
+            existing_match = None
+            for item in self.issues:
+                if str(item.get("id", "")).strip() == req_id:
+                    existing_match = item
+                    break
+                    
+            if existing_match:
+                # Update existing issue directly
+                for k in ["project_id", "site_name", "lot", "week", "start_date", "end_date", "category", "description", "action_plan", "status", "severity", "reported_by"]:
+                    if k in data and data[k] is not None:
+                        existing_match[k] = data[k]
+                existing_match["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.save_issues_cache()
+                return existing_match
+            else:
+                new_id = req_id
+        else:
+            existing_nums = []
+            for item in self.issues:
+                iid = str(item.get("id", ""))
+                if iid.startswith("ISS-"):
+                    try:
+                        num_str = iid.replace("ISS-", "")
+                        if num_str.isdigit():
+                            existing_nums.append(int(num_str))
+                    except:
+                        pass
+            next_num = (max(existing_nums) + 1) if existing_nums else 1
+            new_id = f"ISS-{next_num:03d}"
 
         p_id = data.get("project_id", "")
         site_name = data.get("site_name", "")
@@ -1295,5 +1654,117 @@ class ProjectEngine:
                 "actual_cum": lot_actual_cum
             }
         }
+
+    # =========================================================================
+    # PHOTO MANAGEMENT (6 SLOTS PER PROJECT)
+    # =========================================================================
+    DEFAULT_PHOTO_SLOTS = [
+        {"slot": 1, "title": "ภาพรวมหน้างาน (Overall Site Overview)", "category": "site_overview"},
+        {"slot": 2, "title": "งานโครงสร้างและฐานราก (Mounting & Civil Structure)", "category": "civil_mounting"},
+        {"slot": 3, "title": "งานติดตั้งแผงโซลาร์เซลล์ (Solar PV Modules)", "category": "solar_panels"},
+        {"slot": 4, "title": "งานอินเวอร์เตอร์และรางสายไฟ (Inverter & Cable Trays)", "category": "inverter_cables"},
+        {"slot": 5, "title": "จุดเชื่อมต่อระบบไฟฟ้า (MDB / Substation & Grid Connection)", "category": "grid_connection"},
+        {"slot": 6, "title": "งานทดสอบและตรวจรับความปลอดภัย (Testing & Safety Activities)", "category": "testing_safety"}
+    ]
+
+    def load_photos_cache(self):
+        if os.path.exists(self.photos_path):
+            try:
+                with open(self.photos_path, 'r', encoding='utf-8') as f:
+                    self.photos = json.load(f)
+                print(f"[Engine] Loaded photos cache for {len(self.photos)} projects.")
+                return
+            except Exception as e:
+                print(f"[Engine Warning] Failed to load photos cache: {e}")
+        
+        self.photos = {}
+        self.save_photos_cache()
+
+    def save_photos_cache(self):
+        try:
+            tmp_path = self.photos_path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(self.photos, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.photos_path)
+        except Exception as e:
+            print(f"[Engine Error] Failed to save photos cache: {e}")
+
+    def get_project_photos(self, project_id: str) -> List[Dict[str, Any]]:
+        p_id = str(project_id).strip()
+        prj_data = self.photos.get(p_id, {})
+        slots_map = prj_data.get("slots", {})
+        
+        results = []
+        for def_slot in self.DEFAULT_PHOTO_SLOTS:
+            s_num = def_slot["slot"]
+            existing = slots_map.get(str(s_num), {})
+            results.append({
+                "slot": s_num,
+                "title": existing.get("title") or def_slot["title"],
+                "category": def_slot["category"],
+                "photo_url": existing.get("photo_url", ""),
+                "drive_file_id": existing.get("drive_file_id", ""),
+                "download_url": existing.get("download_url", ""),
+                "date": existing.get("date", ""),
+                "caption": existing.get("caption", ""),
+                "updated_by": existing.get("updated_by", ""),
+                "updated_at": existing.get("updated_at", "")
+            })
+        return results
+
+    def save_project_photo(self, project_id: str, photo_data: Dict[str, Any]) -> Dict[str, Any]:
+        p_id = str(project_id).strip()
+        slot = int(photo_data.get("slot", 1))
+        
+        if p_id not in self.photos:
+            prj = self.projects_dict.get(p_id)
+            prj_name = photo_data.get("project_name") or (prj.get("name") if prj else f"Project {p_id}")
+            self.photos[p_id] = {
+                "project_id": p_id,
+                "project_name": prj_name,
+                "slots": {}
+            }
+        
+        slots_map = self.photos[p_id].setdefault("slots", {})
+        existing = slots_map.get(str(slot), {})
+        
+        def_title = f"Slot {slot}"
+        for d in self.DEFAULT_PHOTO_SLOTS:
+            if d["slot"] == slot:
+                def_title = d["title"]
+                break
+                
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Prefer new photo_url, or incoming image_base64 (data URL), or retain existing photo_url
+        new_photo_url = photo_data.get("photo_url") or photo_data.get("image_base64") or existing.get("photo_url", "")
+        new_drive_id = photo_data.get("drive_file_id") or existing.get("drive_file_id", "")
+        new_download_url = photo_data.get("download_url") or existing.get("download_url", "")
+        
+        slot_obj = {
+            "slot": slot,
+            "title": photo_data.get("title") or existing.get("title") or def_title,
+            "photo_url": new_photo_url,
+            "drive_file_id": new_drive_id,
+            "download_url": new_download_url,
+            "date": photo_data.get("date") or existing.get("date") or datetime.now().strftime("%Y-%m-%d"),
+            "caption": photo_data.get("caption") if photo_data.get("caption") is not None else existing.get("caption", ""),
+            "updated_by": photo_data.get("updated_by") or existing.get("updated_by") or "Web App",
+            "updated_at": now_str
+        }
+        
+        slots_map[str(slot)] = slot_obj
+        self.save_photos_cache()
+        return slot_obj
+
+    def delete_project_photo(self, project_id: str, slot: int) -> bool:
+        p_id = str(project_id).strip()
+        if p_id in self.photos and "slots" in self.photos[p_id]:
+            if str(slot) in self.photos[p_id]["slots"]:
+                del self.photos[p_id]["slots"][str(slot)]
+                self.save_photos_cache()
+                return True
+        return False
+
 
 

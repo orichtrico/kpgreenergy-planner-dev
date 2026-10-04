@@ -3,6 +3,7 @@ let globalOverview = null;
 let allProjects = [];
 let currentProject = null;
 let currentTab = 'overview';
+let cachedWeightMatrix = {};
 
 // Charts references
 let phaseBarChart = null;
@@ -98,6 +99,7 @@ async function loadInitialData() {
     renderComparisonTab();
     populateSimulatorDropdowns();
     populateCctvDropdown();
+    populatePhotoProjectDropdown();
     
     // Initial fetch of issues
     fetchIssuesData().then(updateIssuesNavBadge).catch(() => {});
@@ -203,10 +205,9 @@ function updateProjectDropdown(projectsList) {
   }
 }
 
-// Tab Switching
 function switchTab(tabId) {
   currentTab = tabId;
-  const tabs = ['overview', 'project', 'comparison', 'issues', 'cctv', 'integration'];
+  const tabs = ['overview', 'project', 'comparison', 'issues', 'cctv', 'photos', 'integration'];
   
   tabs.forEach(t => {
     const el = document.getElementById(`tab-${t}`);
@@ -237,6 +238,8 @@ function switchTab(tabId) {
       renderComparisonTab();
     } else if (tabId === 'issues') {
       renderIssuesTab();
+    } else if (tabId === 'photos') {
+      renderPhotosTab();
     }
   }, 50);
 }
@@ -648,7 +651,7 @@ function renderMilestonesTable(milestones) {
       <td class="py-3 px-3 text-center font-mono font-semibold text-emerald-600">${contribPct}</td>
       <td class="py-3 px-3 text-center">${statusBadge}</td>
       <td class="py-3 px-3 text-center">
-        <button onclick="openQuickUpdateModal('${m.name}', ${pctVal}, '${m.actual_start || ''}', '${m.actual_finish || ''}')" class="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-amber-50" title="แก้ไข">
+        <button onclick="openQuickUpdateModalByIndex(${idx})" class="p-1 text-slate-400 hover:text-amber-600 rounded hover:bg-amber-50" title="แก้ไข">
           <i data-lucide="edit-2" class="w-4 h-4"></i>
         </button>
       </td>
@@ -1325,33 +1328,370 @@ function openProjectFromComparison(projectId) {
 
 
 // =========================================================================
+// =========================================================================
+// S-CURVE CHART TO IMAGE UTILITIES (100% Reliable Offscreen Rendering)
+// =========================================================================
+async function getProjectScurveDataUri(scurveData, width = 760, height = 350) {
+  if (!scurveData || !scurveData.weeks || scurveData.weeks.length === 0) {
+    return '';
+  }
+
+  // Create temporary offscreen container with explicit pixel dimensions
+  const tempDiv = document.createElement('div');
+  tempDiv.id = 'temp-pdf-scurve-' + Date.now();
+  tempDiv.style.position = 'fixed';
+  tempDiv.style.left = '-99999px';
+  tempDiv.style.top = '0';
+  tempDiv.style.width = width + 'px';
+  tempDiv.style.height = height + 'px';
+  tempDiv.style.background = '#ffffff';
+  tempDiv.style.zIndex = '-9999';
+  document.body.appendChild(tempDiv);
+
+  let uri = '';
+  let tempChart = null;
+  try {
+    const options = {
+      series: [
+        {
+          name: 'Planned Cumulative S-Curve (%)',
+          type: 'line',
+          data: scurveData.planned_cum || []
+        },
+        {
+          name: 'Actual Cumulative S-Curve (%)',
+          type: 'line',
+          data: scurveData.actual_cum || []
+        },
+        {
+          name: 'Planned Weekly (%)',
+          type: 'column',
+          data: scurveData.planned_weekly || []
+        },
+        {
+          name: 'Actual Weekly (%)',
+          type: 'column',
+          data: scurveData.actual_weekly || []
+        }
+      ],
+      chart: {
+        width: width,
+        height: height,
+        type: 'line',
+        stacked: false,
+        animations: { enabled: false }, // Essential for instant canvas export
+        toolbar: { show: false },
+        fontFamily: 'Prompt, sans-serif'
+      },
+      stroke: {
+        width: [3.5, 3.5, 0, 0],
+        curve: 'smooth',
+        dashArray: [0, 0, 0, 0]
+      },
+      colors: ['#2563eb', '#10b981', '#93c5fd', '#6ee7b7'],
+      fill: {
+        opacity: [1, 1, 0.45, 0.55]
+      },
+      labels: scurveData.labels || [],
+      xaxis: {
+        type: 'category',
+        labels: {
+          rotate: -45,
+          rotateAlways: false,
+          style: { fontSize: '9px', colors: '#64748b' }
+        }
+      },
+      yaxis: [
+        {
+          title: { text: 'Cumulative %', style: { fontSize: '9px', color: '#64748b' } },
+          min: 0,
+          max: 100,
+          labels: { formatter: val => Math.round(val) + '%' }
+        },
+        {
+          opposite: true,
+          show: false,
+          min: 0,
+          max: 100
+        },
+        {
+          opposite: true,
+          title: { text: 'Weekly %', style: { fontSize: '9px', color: '#64748b' } },
+          min: 0,
+          max: 30,
+          labels: { formatter: val => val ? val.toFixed(1) + '%' : '' }
+        },
+        {
+          opposite: true,
+          show: false,
+          min: 0,
+          max: 30
+        }
+      ],
+      legend: {
+        position: 'top',
+        fontSize: '11px'
+      }
+    };
+
+    tempChart = new ApexCharts(tempDiv, options);
+    await tempChart.render();
+    
+    // Wait a brief 100ms for layout to settle
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    if (typeof tempChart.dataURI === 'function') {
+      const res = await tempChart.dataURI();
+      uri = res.imgURI || '';
+    }
+
+    // Fallback: If dataURI is empty, convert SVG element directly to PNG data URL
+    if (!uri) {
+      const svgEl = tempDiv.querySelector('svg.apexcharts-svg');
+      if (svgEl) {
+        uri = await convertSvgElementToPngDataUri(svgEl, width, height);
+      }
+    }
+  } catch (err) {
+    console.warn("Could not generate off-screen S-Curve chart:", err);
+  } finally {
+    if (tempChart) {
+      try { tempChart.destroy(); } catch (e) {}
+    }
+    if (tempDiv && tempDiv.parentNode) {
+      tempDiv.parentNode.removeChild(tempDiv);
+    }
+  }
+  return uri;
+}
+
+async function getLotScurveDataUri(lotData, isCutoffMode = true, width = 760, height = 320) {
+  if (!lotData || !lotData.week_labels || lotData.week_labels.length === 0) {
+    return '';
+  }
+
+  const tempDiv = document.createElement('div');
+  tempDiv.id = 'temp-pdf-lot-scurve-' + Date.now();
+  tempDiv.style.position = 'fixed';
+  tempDiv.style.left = '-99999px';
+  tempDiv.style.top = '0';
+  tempDiv.style.width = width + 'px';
+  tempDiv.style.height = height + 'px';
+  tempDiv.style.background = '#ffffff';
+  tempDiv.style.zIndex = '-9999';
+  document.body.appendChild(tempDiv);
+
+  let uri = '';
+  let tempChart = null;
+  try {
+    const scurveLabels = lotData.week_labels || [];
+    const plannedCum = lotData.planned_cum || [];
+    const actualCum = lotData.actual_cum || [];
+
+    let displayedLabels = scurveLabels;
+    let displayedPlanned = plannedCum;
+    let displayedActual = actualCum;
+
+    const safeCutoff = (lotData.current_week_index !== undefined && lotData.current_week_index >= 0)
+      ? Math.min(lotData.current_week_index + 1, scurveLabels.length)
+      : scurveLabels.length;
+
+    if (isCutoffMode && safeCutoff > 0 && safeCutoff <= scurveLabels.length) {
+      displayedLabels = scurveLabels.slice(0, safeCutoff);
+      displayedPlanned = plannedCum.slice(0, safeCutoff);
+      displayedActual = actualCum.slice(0, safeCutoff);
+    }
+
+    const scurveOptions = {
+      series: [
+        {
+          name: 'แผนงานสะสม (% Plan)',
+          data: displayedPlanned
+        },
+        {
+          name: 'ผลงานจริงสะสม (% Actual)',
+          data: displayedActual
+        }
+      ],
+      chart: {
+        width: width,
+        height: height,
+        type: 'line',
+        animations: { enabled: false },
+        toolbar: { show: false },
+        fontFamily: 'Prompt, sans-serif'
+      },
+      colors: ['#2563eb', '#10b981'],
+      stroke: {
+        width: [3, 3.5],
+        curve: 'smooth',
+        dashArray: [4, 0]
+      },
+      markers: {
+        size: displayedLabels.length <= 30 ? [3, 4] : [1, 2],
+        strokeWidth: 2
+      },
+      xaxis: {
+        categories: displayedLabels,
+        labels: {
+          rotate: -45,
+          rotateAlways: displayedLabels.length > 12,
+          style: { fontSize: '9px', colors: '#64748b' }
+        },
+        tickAmount: Math.min(24, Math.max(1, displayedLabels.length))
+      },
+      yaxis: {
+        min: 0,
+        max: 100,
+        labels: { formatter: val => `${Math.round(val)}%` },
+        title: { text: '% ความก้าวหน้าสะสม', style: { fontSize: '9px', color: '#475569' } }
+      },
+      legend: {
+        position: 'top',
+        horizontalAlign: 'right',
+        fontSize: '11px'
+      },
+      grid: {
+        borderColor: '#f1f5f9',
+        strokeDashArray: 3
+      }
+    };
+
+    tempChart = new ApexCharts(tempDiv, scurveOptions);
+    await tempChart.render();
+    await new Promise(r => setTimeout(r, 100));
+
+    if (typeof tempChart.dataURI === 'function') {
+      const res = await tempChart.dataURI();
+      uri = res.imgURI || '';
+    }
+
+    if (!uri) {
+      const svgEl = tempDiv.querySelector('svg.apexcharts-svg');
+      if (svgEl) {
+        uri = await convertSvgElementToPngDataUri(svgEl, width, height);
+      }
+    }
+  } catch (err) {
+    console.warn("Could not export lot scurve offscreen:", err);
+  } finally {
+    if (tempChart) {
+      try { tempChart.destroy(); } catch (e) {}
+    }
+    if (tempDiv && tempDiv.parentNode) {
+      tempDiv.parentNode.removeChild(tempDiv);
+    }
+  }
+  return uri;
+}
+
+function convertSvgElementToPngDataUri(svgElement, width, height) {
+  return new Promise((resolve) => {
+    try {
+      const xml = new XMLSerializer().serializeToString(svgElement);
+      const svg64 = btoa(unescape(encodeURIComponent(xml)));
+      const image64 = 'data:image/svg+xml;base64,' + svg64;
+      const img = new Image();
+      img.onload = function () {
+        const canvas = document.createElement('canvas');
+        canvas.width = width * 2;
+        canvas.height = height * 2;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/png', 0.95));
+      };
+      img.onerror = function () {
+        resolve(image64);
+      };
+      img.src = image64;
+    } catch (e) {
+      console.warn("convertSvgElementToPngDataUri error:", e);
+      resolve('');
+    }
+  });
+}
+
+// =========================================================================
 // PDF REPORT GENERATOR (Exact 210mm x 297mm A4, Zero Left Shift)
 // =========================================================================
 async function generateProjectPDF() {
-  if (!currentProject) {
+  const btn = document.getElementById('btn-gen-pdf');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="animate-spin mr-1">⏳</span> กำลังเตรียมข้อมูลและสร้าง PDF...`;
+  }
+  
+  // 0. Determine target project ID and fetch latest full project data
+  let targetProjectId = (currentTab === 'photos' && currentPhotoProjectId) ? currentPhotoProjectId : (currentProject ? currentProject.id : (currentPhotoProjectId || (allProjects[0] ? allProjects[0].id : null)));
+  if (!targetProjectId && currentProject) {
+    targetProjectId = currentProject.id;
+  }
+
+  if (!targetProjectId) {
     showToast('กรุณาเลือกโครงการก่อนสร้างรายงาน', 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+    return;
+  }
+
+  let p = currentProject;
+  try {
+    const res = await fetch(`/api/projects/${targetProjectId}?t=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) {
+      p = await res.json();
+      currentProject = p;
+    }
+  } catch (e) {
+    console.warn("Could not refresh project data for PDF:", e);
+  }
+
+  if (!p) {
+    showToast('ไม่พบข้อมูลโครงการสำหรับสร้างรายงาน', 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
     return;
   }
   
-  const btn = document.getElementById('btn-gen-pdf');
-  const originalHtml = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `<span class="animate-spin mr-1">⏳</span> กำลังสร้าง PDF 2 หน้าสมบูรณ์...`;
-  
-  const p = currentProject;
   const now = new Date();
   const dateStr = now.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
   
-  // 1. Capture S-Curve Chart as Image
+  // 1. Capture S-Curve Chart as Image (Offscreen independent rendering)
   let scurveImgUri = '';
   try {
-    if (projectScurveChart && typeof projectScurveChart.dataURI === 'function') {
-      const chartRes = await projectScurveChart.dataURI();
-      scurveImgUri = chartRes.imgURI || '';
-    }
+    scurveImgUri = await getProjectScurveDataUri(p.s_curve, 760, 350);
   } catch (chartErr) {
     console.warn("Could not export chart as dataURI:", chartErr);
   }
+
+  // If offscreen capture was empty, fallback to existing chart instance if available
+  if (!scurveImgUri && projectScurveChart && typeof projectScurveChart.dataURI === 'function') {
+    try {
+      const chartRes = await projectScurveChart.dataURI();
+      scurveImgUri = chartRes.imgURI || '';
+    } catch (e) {}
+  }
+
+  // 1.5 Fetch project photos if available
+  let pdfPhotos = [];
+  try {
+    const photoRes = await fetch(`/api/projects/${p.id}/photos`);
+    if (photoRes.ok) {
+      const pData = await photoRes.json();
+      pdfPhotos = pData.photos || [];
+    }
+  } catch (pErr) {
+    console.warn("Could not load photos for PDF:", pErr);
+  }
+
+  const hasPhotos = (pdfPhotos || []).some(x => Boolean(x.photo_url || x.drive_file_id));
+  const totalPages = hasPhotos ? 3 : 2;
 
   // 2. Build Milestone Rows for all 33 items (Precise 210mm printable width)
   let milestoneRows = '';
@@ -1500,13 +1840,13 @@ async function generateProjectPDF() {
         <!-- Page 1 Footer -->
         <div style="border-top: 1px solid #cbd5e1; padding-top: 5px; display: flex; justify-content: space-between; font-size: 7.5px; color: #94a3b8;">
           <div>KPGreenergy Planner • เอกสารรายงานความคืบหน้าโครงการอัตโนมัติ</div>
-          <div>หน้า 1 / 2 (รายละเอียดไซต์และกราฟ S-Curve)</div>
+          <div>หน้า 1 / ${totalPages} (รายละเอียดไซต์และกราฟ S-Curve)</div>
         </div>
 
       </div>
 
       <!-- ================= PAGE 2 (EXACT A4: 210mm x 297mm) ================= -->
-      <div style="width: 210mm; height: 295mm; max-height: 295mm; padding: 8mm 10mm; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; background: #ffffff; overflow: hidden;">
+      <div style="width: 210mm; height: 295mm; max-height: 295mm; padding: 8mm 10mm; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; page-break-after: ${hasPhotos ? 'always' : 'auto'}; background: #ffffff; overflow: hidden;">
         
         <div>
           <!-- Header Page 2 -->
@@ -1558,10 +1898,74 @@ async function generateProjectPDF() {
         <!-- Page 2 Footer -->
         <div style="border-top: 1px solid #cbd5e1; padding-top: 5px; display: flex; justify-content: space-between; font-size: 7.5px; color: #94a3b8;">
           <div>KPGreenergy Planner • เอกสารรายงานความคืบหน้าโครงการอัตโนมัติ</div>
-          <div>หน้า 2 / 2 (ตารางขั้นตอนการดำเนินงานทั้งหมด)</div>
+          <div>หน้า 2 / ${totalPages} (ตารางขั้นตอนการดำเนินงานทั้งหมด)</div>
         </div>
 
       </div>
+
+      ${hasPhotos ? `
+      <!-- ================= PAGE 3 (SITE PHOTOS: 210mm x 297mm) ================= -->
+      <div style="width: 210mm; height: 295mm; max-height: 295mm; padding: 8mm 10mm; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; background: #ffffff; overflow: hidden;">
+        
+        <div>
+          <!-- Header Page 3 -->
+          <div style="border-bottom: 2px solid #043327; padding-bottom: 5px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: flex-end;">
+            <div>
+              <h3 style="font-size: 12.5px; font-weight: 800; margin: 0; color: #043327;">📸 ภาพถ่ายความคืบหน้าหน้างานจริง (Site Progress Photos - 6 จุดสำคัญ)</h3>
+              <p style="font-size: 8.5px; color: #64748b; margin: 1px 0 0 0;">โครงการ: <strong style="color: #0f172a;">${p.name}</strong> (${p.capacity_kwp} kWp)</p>
+            </div>
+            <div style="font-size: 8px; color: #64748b; text-align: right;">
+              วันที่ออกรายงาน: <strong>${dateStr}</strong>
+            </div>
+          </div>
+
+          <!-- 6 Photos 2-Column Grid -->
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+            ${DEFAULT_PHOTO_CATEGORIES.map(cat => {
+              const photo = (pdfPhotos || []).find(x => x.slot === cat.slot) || {};
+              const imgUrl = photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
+              const pDate = photo.date || '-';
+              const caption = photo.caption || 'ดำเนินงานตามแผนงาน';
+
+              return `
+                <div style="border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background: #fafafa; display: flex; flex-direction: column; height: 78mm;">
+                  
+                  <!-- Slot Header -->
+                  <div style="background: #043327; color: #ffffff; padding: 3px 6px; font-size: 7.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 65mm;">${cat.title}</span>
+                    <span style="color: #fef08a; font-size: 7px;">${pDate}</span>
+                  </div>
+
+                  <!-- Image Container -->
+                  <div style="height: 56mm; background: #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                    ${imgUrl ? `
+                      <img src="${imgUrl}" style="width: 100%; height: 100%; object-fit: cover; display: block;" />
+                    ` : `
+                      <div style="color: #94a3b8; font-size: 8px; text-align: center;">(ยังไม่มีภาพถ่ายในจุดนี้)</div>
+                    `}
+                  </div>
+
+                  <!-- Caption Box -->
+                  <div style="padding: 3px 6px; font-size: 7px; color: #334155; flex-grow: 1; display: flex; align-items: center; background: #ffffff; border-top: 1px solid #e2e8f0; line-height: 1.15;">
+                    <span style="font-weight: 600; color: #043327; margin-right: 3px;">บันทึก:</span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${caption}</span>
+                  </div>
+
+                </div>
+              `;
+            }).join('')}
+          </div>
+
+        </div>
+
+        <!-- Page 3 Footer -->
+        <div style="border-top: 1px solid #cbd5e1; padding-top: 5px; display: flex; justify-content: space-between; font-size: 7.5px; color: #94a3b8;">
+          <div>KPGreenergy Planner • เอกสารรายงานความคืบหน้าโครงการอัตโนมัติ</div>
+          <div>หน้า 3 / 3 (ภาพถ่ายความคืบหน้าหน้างานจริง 6 จุดสำคัญ)</div>
+        </div>
+
+      </div>
+      ` : ''}
 
     </div>
   `;
@@ -1586,13 +1990,15 @@ async function generateProjectPDF() {
 
   try {
     await html2pdf().set(opt).from(elementToPrint).save();
-    showToast(`สร้างรายงาน PDF โครงการ ${p.name} 2 หน้าสมบูรณ์สำเร็จแล้ว!`);
+    showToast(`สร้างรายงาน PDF โครงการ ${p.name} (${totalPages} หน้า) สำเร็จแล้ว!`, 'success');
   } catch (err) {
     console.error("PDF generation error:", err);
     window.print();
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = originalHtml;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
     lucide.createIcons();
   }
 }
@@ -1622,17 +2028,21 @@ async function generateLotPDF() {
 
   // 1. Capture Lot S-Curve Chart as base64 image
   let scurveImgUri = '';
+  const lotData = cachedLotProgressData || {};
   try {
-    if (lotScurveChart && typeof lotScurveChart.dataURI === 'function') {
+    scurveImgUri = await getLotScurveDataUri(lotData, scurveViewMode === 'cutoff', 760, 320);
+  } catch (err) {
+    console.warn("Could not capture lot scurve offscreen:", err);
+  }
+
+  if (!scurveImgUri && lotScurveChart && typeof lotScurveChart.dataURI === 'function') {
+    try {
       const res = await lotScurveChart.dataURI();
       scurveImgUri = res.imgURI || '';
-    }
-  } catch (err) {
-    console.warn("Could not capture lot scurve image:", err);
+    } catch (e) {}
   }
 
   // 2. Gather Lot Data & Summary Metrics
-  const lotData = cachedLotProgressData || {};
   const sites = lotData.sites || [];
   const totalSites = sites.length;
   const totalCapKwp = sites.reduce((sum, s) => sum + (Number(s.capacity_kwp) || 0), 0);
@@ -1966,7 +2376,16 @@ window.generateLotPDF = generateLotPDF;
 // =========================================================================
 // MODAL & QUICK UPDATE CONTROLLERS
 // =========================================================================
-function openQuickUpdateModal(milestoneName = null, pctVal = 100, actStart = '', actFinish = '') {
+function openQuickUpdateModalByIndex(idx) {
+  if (!currentProject || !currentProject.milestones) return;
+  const m = currentProject.milestones[idx];
+  if (!m) return;
+  const pctVal = Math.round((m.actual_pct || 0) * 100);
+  openQuickUpdateModal(m.name, pctVal, m.actual_start || '', m.actual_finish || '', m.planned_start || '', m.planned_finish || '');
+}
+window.openQuickUpdateModalByIndex = openQuickUpdateModalByIndex;
+
+function openQuickUpdateModal(milestoneName = null, pctVal = 100, actStart = '', actFinish = '', planStart = '', planFinish = '') {
   if (!currentProject) {
     showToast('กรุณาเลือกโครงการก่อนอัปเดตงาน', 'error');
     return;
@@ -1996,6 +2415,10 @@ function openQuickUpdateModal(milestoneName = null, pctVal = 100, actStart = '',
       setModalPct(p);
       document.getElementById('modal-start-date').value = foundM.actual_start || '';
       document.getElementById('modal-finish-date').value = (p >= 100 && foundM.actual_finish) ? foundM.actual_finish : '';
+      const planStartEl = document.getElementById('modal-plan-start-date');
+      const planFinishEl = document.getElementById('modal-plan-finish-date');
+      if (planStartEl) planStartEl.value = foundM.planned_start || '';
+      if (planFinishEl) planFinishEl.value = foundM.planned_finish || '';
     }
   };
   
@@ -2008,6 +2431,13 @@ function openQuickUpdateModal(milestoneName = null, pctVal = 100, actStart = '',
   document.getElementById('modal-start-date').value = actStart || '';
   document.getElementById('modal-finish-date').value = (pctVal >= 100 && actFinish) ? actFinish : '';
   
+  // Set initial planned start & finish dates
+  const curM = (currentProject.milestones || []).find(x => x.name === (milestoneName || mSel.value));
+  const planStartEl = document.getElementById('modal-plan-start-date');
+  const planFinishEl = document.getElementById('modal-plan-finish-date');
+  if (planStartEl) planStartEl.value = planStart || (curM ? curM.planned_start : '') || '';
+  if (planFinishEl) planFinishEl.value = planFinish || (curM ? curM.planned_finish : '') || '';
+
   // Auto-fill password if remembered in session
   const pwdInput = document.getElementById('modal-editor-password');
   const sessionPwd = sessionStorage.getItem('kpg_auth_pwd');
@@ -2049,6 +2479,8 @@ async function handleModalSubmit(e) {
   const pct = parseFloat(document.getElementById('modal-pct-slider').value);
   const startD = document.getElementById('modal-start-date').value;
   const finishD = document.getElementById('modal-finish-date').value;
+  const planStartD = document.getElementById('modal-plan-start-date') ? document.getElementById('modal-plan-start-date').value : '';
+  const planFinishD = document.getElementById('modal-plan-finish-date') ? document.getElementById('modal-plan-finish-date').value : '';
   const pwdInput = document.getElementById('modal-editor-password');
   const pwd = pwdInput ? pwdInput.value.trim() : '';
   const savedSheetUrl = localStorage.getItem('kpgreenergy_webapp_url') || localStorage.getItem('kpgreenergy_gsheet_url') || '';
@@ -2073,6 +2505,8 @@ async function handleModalSubmit(e) {
         actual_pct: pct,
         actual_start: startD,
         actual_finish: finishD,
+        planned_start: planStartD || null,
+        planned_finish: planFinishD || null,
         password: pwd,
         sheet_url: savedSheetUrl,
         updated_by: 'Web Editor'
@@ -2346,7 +2780,7 @@ async function refreshDataSilently() {
   }
 }
 
-// Start auto polling: every 7 seconds + instant on window focus / visibility change
+// Start auto polling: every 7 seconds for fast real-time collaborative updates + instant on window focus
 setInterval(checkLiveStatus, 7000);
 window.addEventListener('focus', checkLiveStatus);
 document.addEventListener('visibilitychange', () => {
@@ -2807,4 +3241,964 @@ function checkAndRenderProjectIssues(projectId) {
   } else {
     banner.classList.add('hidden');
   }
-}
+}
+
+// =========================================================================
+// TAB 6: SITE PHOTOS MANAGEMENT (APPROACH A: GOOGLE DRIVE + APPS SCRIPT)
+// =========================================================================
+let currentPhotoProjectId = null;
+let currentProjectPhotos = [];
+let pendingSlotImages = {};
+
+const DEFAULT_PHOTO_CATEGORIES = [
+  { slot: 1, title: 'ภาพรวมหน้างาน (Overall Site Overview)', desc: 'สภาพพื้นที่โดยรวม, อาคาร/หลังคา, ทางเข้าออกไซต์', icon: 'eye' },
+  { slot: 2, title: 'งานโครงสร้างและฐานราก (Mounting & Civil Structure)', desc: 'รางยึด, เสา, ฐานคอนกรีต, ราง Roof Mounting', icon: 'box' },
+  { slot: 3, title: 'งานติดตั้งแผงโซลาร์เซลล์ (Solar PV Modules)', desc: 'การวางแผง, การจัดเรียง String, สภาพแผงบนหลังคา', icon: 'sun' },
+  { slot: 4, title: 'งานอินเวอร์เตอร์และรางสายไฟ (Inverter & Cable Trays)', desc: 'ตู้ Inverter, เดินท่อร้อยสาย, Cable Ladder', icon: 'cpu' },
+  { slot: 5, title: 'จุดเชื่อมต่อระบบไฟฟ้า (MDB / Substation & Grid Connection)', desc: 'จุดต่อไฟเข้าตู้หลัก MDB, หม้อแปลง, CT/PT', icon: 'zap' },
+  { slot: 6, title: 'งานทดสอบและตรวจรับความปลอดภัย (Testing & Safety Activities)', desc: 'ฉนวนกันความร้อน, ป้ายเตือน, อุปกรณ์เซฟตี้, เครื่องมือวัด', icon: 'shield-check' }
+];
+
+async function renderPhotosTab() {
+  if (!currentPhotoProjectId && currentProject) {
+    currentPhotoProjectId = currentProject.id;
+  } else if (!currentPhotoProjectId && allProjects && allProjects.length > 0) {
+    currentPhotoProjectId = allProjects[0].id;
+  }
+  
+  populatePhotoProjectDropdown();
+  if (currentPhotoProjectId) {
+    await loadProjectPhotos(currentPhotoProjectId);
+  }
+}
+
+function populatePhotoProjectDropdown() {
+  const lotFilterEl = document.getElementById('photo-lot-filter');
+  const lotFilter = lotFilterEl ? lotFilterEl.value : 'ALL';
+  const prjSelect = document.getElementById('photo-project-select');
+  if (!prjSelect || !allProjects || allProjects.length === 0) return;
+
+  // Populate lot filter dynamically from global lots
+  if (lotFilterEl && globalOverview && Array.isArray(globalOverview.lots) && globalOverview.lots.length > 0) {
+    const curVal = lotFilterEl.value || 'ALL';
+    let lotOptionsHtml = '<option value="ALL">ทุก Lot</option>';
+    globalOverview.lots.forEach(l => {
+      lotOptionsHtml += `<option value="${l}">${l}</option>`;
+    });
+    if (lotFilterEl.options.length <= 1) {
+      lotFilterEl.innerHTML = lotOptionsHtml;
+      lotFilterEl.value = curVal;
+    }
+  }
+
+  const currentVal = currentPhotoProjectId || (currentProject ? currentProject.id : allProjects[0].id);
+  let filtered = allProjects;
+  if (lotFilter && lotFilter !== 'ALL') {
+    filtered = filtered.filter(p => (p.lot || '').toUpperCase() === lotFilter.toUpperCase());
+  }
+  if (filtered.length === 0) {
+    filtered = allProjects;
+  }
+
+  prjSelect.innerHTML = filtered.map(p => {
+    const isSel = String(p.id) === String(currentVal) ? 'selected' : '';
+    return `<option value="${p.id}" ${isSel}>${p.name} (${p.lot || '-'})</option>`;
+  }).join('');
+
+  if (filtered.length > 0) {
+    const matched = filtered.find(p => String(p.id) === String(currentVal));
+    if (matched) {
+      currentPhotoProjectId = matched.id;
+      prjSelect.value = matched.id;
+    } else {
+      currentPhotoProjectId = filtered[0].id;
+      prjSelect.value = filtered[0].id;
+    }
+  }
+}
+
+function onPhotoLotFilterChange() {
+  populatePhotoProjectDropdown();
+  const prjSelect = document.getElementById('photo-project-select');
+  if (prjSelect && prjSelect.value) {
+    currentPhotoProjectId = prjSelect.value;
+    loadProjectPhotos(currentPhotoProjectId);
+  }
+}
+
+function onPhotoProjectChange() {
+  const prjSelect = document.getElementById('photo-project-select');
+  if (prjSelect && prjSelect.value) {
+    currentPhotoProjectId = prjSelect.value;
+    if (typeof selectProject === 'function') {
+      const p = (allProjects || []).find(x => String(x.id) === String(currentPhotoProjectId));
+      if (p) currentProject = p;
+    }
+    loadProjectPhotos(currentPhotoProjectId);
+  }
+}
+
+async function reloadCurrentProjectPhotos() {
+  if (currentPhotoProjectId) {
+    await loadProjectPhotos(currentPhotoProjectId);
+    showToast('รีเฟรชข้อมูลภาพถ่ายเรียบร้อย', 'success');
+  }
+}
+
+async function loadProjectPhotos(projectId) {
+  if (!projectId) return;
+  
+  const prj = (allProjects || []).find(p => String(p.id) === String(projectId)) || currentProject;
+
+  const headerName = document.getElementById('photo-header-name');
+  const headerLot = document.getElementById('photo-header-lot');
+  const headerDetails = document.getElementById('photo-header-details');
+  const headerActualPct = document.getElementById('photo-header-actual-pct');
+  const headerCount = document.getElementById('photo-header-count');
+
+  if (prj) {
+    if (headerName) headerName.innerText = prj.name;
+    if (headerLot) headerLot.innerText = prj.lot || 'Lot -';
+    if (headerDetails) headerDetails.innerText = `กำลังการผลิต: ${prj.capacity_kwp || '-'} kWp | ประเภท: ${prj.installation_type || '-'} | แผน: ${prj.planned_progress_pct || 0}%`;
+    if (headerActualPct) headerActualPct.innerText = `${prj.actual_progress_pct || 0}%`;
+  }
+
+  const gridEl = document.getElementById('photo-cards-grid');
+  if (gridEl) {
+    gridEl.innerHTML = `<div class="col-span-full py-12 text-center text-slate-400 text-sm"><span class="animate-spin inline-block mr-2">⏳</span> กำลังโหลดข้อมูลภาพถ่ายโครงการ...</div>`;
+  }
+
+  try {
+    const res = await fetch(`/api/projects/${projectId}/photos`);
+    if (res.ok) {
+      const data = await res.json();
+      currentProjectPhotos = data.photos || [];
+    } else {
+      currentProjectPhotos = [];
+    }
+  } catch (err) {
+    console.warn("Could not fetch photos from server:", err);
+    currentProjectPhotos = [];
+  }
+
+  const uploadedCount = (currentProjectPhotos || []).filter(p => p.photo_url || p.drive_file_id || pendingSlotImages[p.slot]).length;
+  if (headerCount) headerCount.innerText = `${uploadedCount} / 6 รูป`;
+
+  renderPhotoCards(currentProjectPhotos, prj);
+}
+
+function renderPhotoCards(photos, prj) {
+  const gridEl = document.getElementById('photo-cards-grid');
+  if (!gridEl) return;
+
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const html = DEFAULT_PHOTO_CATEGORIES.map(cat => {
+    const slotNum = cat.slot;
+    const photo = (photos || []).find(p => p.slot === slotNum) || {};
+    const hasPhoto = Boolean(photo.photo_url || photo.drive_file_id || pendingSlotImages[slotNum]);
+    const photoUrl = pendingSlotImages[slotNum] || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
+    const photoDate = photo.date || todayStr;
+    const photoCaption = photo.caption || '';
+    const updatedBy = photo.updated_by || 'วิศวกรหน้างาน';
+    const updatedAt = photo.updated_at ? photo.updated_at.split(' ')[0] : '';
+
+    return `
+      <div class="bg-white rounded-2xl border ${hasPhoto ? 'border-emerald-200 shadow-sm' : 'border-slate-200'} p-5 flex flex-col justify-between space-y-4 hover:shadow-md transition">
+        
+        <!-- Card Header -->
+        <div>
+          <div class="flex items-center justify-between gap-2 mb-1.5">
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${hasPhoto ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}">
+              Slot ${slotNum}
+            </span>
+            ${hasPhoto ? `
+              <span class="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
+                <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                <span>มีรูปแล้ว</span>
+              </span>
+            ` : `
+              <span class="text-[11px] text-slate-400">ยังไม่มีรูป</span>
+            `}
+          </div>
+          <h4 class="font-bold text-slate-900 text-sm leading-tight">${cat.title}</h4>
+          <p class="text-[11px] text-slate-500 mt-0.5">${cat.desc}</p>
+        </div>
+
+        <!-- Photo Image Preview Container -->
+        <div id="photo-preview-container-${slotNum}" class="relative w-full h-48 bg-slate-100 rounded-xl overflow-hidden border border-slate-200 flex items-center justify-center group">
+          ${hasPhoto && photoUrl ? `
+            <img id="photo-img-tag-${slotNum}" src="${photoUrl}" alt="${cat.title}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
+            
+            <!-- Hover Action Overlay -->
+            <div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+              <button onclick="openPhotoLightbox(${slotNum})" class="p-2 bg-white/90 hover:bg-white text-slate-900 rounded-lg shadow text-xs font-medium flex items-center gap-1" title="ดูรูปขนาดใหญ่">
+                <i data-lucide="maximize-2" class="w-4 h-4"></i>
+              </button>
+              ${photo.drive_file_id ? `
+                <a href="https://drive.google.com/file/d/${photo.drive_file_id}/view" target="_blank" class="p-2 bg-emerald-600/90 hover:bg-emerald-600 text-white rounded-lg shadow text-xs font-medium flex items-center gap-1" title="เปิดใน Google Drive">
+                  <i data-lucide="external-link" class="w-4 h-4"></i>
+                </a>
+              ` : ''}
+              <button onclick="deletePhotoSlot(${slotNum})" class="p-2 bg-rose-600/90 hover:bg-rose-600 text-white rounded-lg shadow text-xs font-medium flex items-center gap-1" title="ลบรูปภาพ">
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+              </button>
+            </div>
+          ` : `
+            <div class="flex flex-col items-center justify-center text-slate-400 p-4 text-center cursor-pointer" onclick="document.getElementById('photo-input-${slotNum}').click()">
+              <i data-lucide="image-plus" class="w-8 h-8 text-slate-300 mb-1"></i>
+              <span class="text-xs font-medium text-slate-600">คลิกเลือกภาพ หรือถ่ายรูป</span>
+              <span class="text-[10px] text-slate-400 mt-0.5">ระบบจะบีบอัดรูปภาพอัตโนมัติ</span>
+            </div>
+          `}
+          
+          <input type="file" id="photo-input-${slotNum}" accept="image/*" class="hidden" onchange="handlePhotoSlotFileSelected(${slotNum}, this)" />
+        </div>
+
+        <!-- Form Details -->
+        <div class="space-y-2.5 text-xs">
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-700 mb-1">วันที่ถ่ายภาพ</label>
+            <input type="date" id="photo-date-${slotNum}" value="${photoDate}" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-emerald-500 font-medium" />
+          </div>
+
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-700 mb-1">คำบรรยาย / บันทึกหน้างาน</label>
+            <textarea id="photo-caption-${slotNum}" rows="2" placeholder="ระบุรายละเอียด เช่น ติดตั้งเสร็จ 100%, พร้อมตรวจรับ" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-emerald-500">${photoCaption}</textarea>
+          </div>
+
+          <!-- Bottom Action Buttons -->
+          <div class="flex items-center gap-2 pt-1">
+            <button type="button" onclick="document.getElementById('photo-input-${slotNum}').click()" class="flex-1 py-2 px-3 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium flex items-center justify-center gap-1.5 transition">
+              <i data-lucide="camera" class="w-3.5 h-3.5 text-emerald-600"></i>
+              <span>${hasPhoto ? 'เปลี่ยนรูป' : 'เลือกรูป'}</span>
+            </button>
+            <button type="button" id="btn-save-photo-${slotNum}" onclick="savePhotoSlotData(${slotNum})" class="py-2 px-4 rounded-xl bg-[#043327] hover:bg-[#064e3b] text-white font-semibold flex items-center justify-center gap-1.5 shadow-sm transition">
+              <i data-lucide="save" class="w-3.5 h-3.5"></i>
+              <span>บันทึก</span>
+            </button>
+          </div>
+
+          ${hasPhoto && updatedAt ? `
+            <div class="text-[10px] text-slate-400 text-right">อัปเดต: ${updatedAt} โดย ${updatedBy}</div>
+          ` : ''}
+
+        </div>
+
+      </div>
+    `;
+  }).join('');
+
+  gridEl.innerHTML = html;
+  lucide.createIcons();
+}
+
+function compressImageClientSide(file, maxWidth = 1600, maxHeight = 1600, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.src = e.target.result;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedDataUrl);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+}
+
+async function handlePhotoSlotFileSelected(slotNum, inputEl) {
+  if (!inputEl.files || inputEl.files.length === 0) return;
+  const file = inputEl.files[0];
+  
+  showToast(`กำลังประมวลผลและย่อขนาดภาพ Slot ${slotNum}...`, 'info');
+  try {
+    const compressedBase64 = await compressImageClientSide(file);
+    pendingSlotImages[slotNum] = compressedBase64;
+    
+    // Instant DOM preview update so image displays IMMEDIATELY
+    const previewContainer = document.getElementById(`photo-preview-container-${slotNum}`);
+    if (previewContainer) {
+      previewContainer.innerHTML = `
+        <img id="photo-img-tag-${slotNum}" src="${compressedBase64}" alt="Slot ${slotNum}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
+        <div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+          <button onclick="openPhotoLightbox(${slotNum})" class="p-2 bg-white/90 hover:bg-white text-slate-900 rounded-lg shadow text-xs font-medium flex items-center gap-1" title="ดูรูปขนาดใหญ่">
+            <i data-lucide="maximize-2" class="w-4 h-4"></i>
+          </button>
+          <button onclick="deletePhotoSlot(${slotNum})" class="p-2 bg-rose-600/90 hover:bg-rose-600 text-white rounded-lg shadow text-xs font-medium flex items-center gap-1" title="ลบรูปภาพ">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+          </button>
+        </div>
+        <input type="file" id="photo-input-${slotNum}" accept="image/*" class="hidden" onchange="handlePhotoSlotFileSelected(${slotNum}, this)" />
+      `;
+      lucide.createIcons();
+    }
+    
+    // Clear input so onchange triggers cleanly on re-selection
+    inputEl.value = '';
+    
+    // Automatically save right away
+    await savePhotoSlotData(slotNum);
+  } catch (err) {
+    console.error("Error processing photo file:", err);
+    alert('ไม่สามารถประมวลผลไฟล์ภาพได้: ' + err.message);
+  }
+}
+
+async function savePhotoSlotData(slotNum) {
+  if (!currentPhotoProjectId) {
+    if (currentProject) {
+      currentPhotoProjectId = currentProject.id;
+    } else if (allProjects && allProjects.length > 0) {
+      currentPhotoProjectId = allProjects[0].id;
+    } else {
+      alert('กรุณาเลือกโครงการก่อนบันทึกภาพถ่าย');
+      return;
+    }
+  }
+
+  const btn = document.getElementById(`btn-save-photo-${slotNum}`);
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="animate-spin inline-block">⏳</span> บันทึก...`;
+  }
+
+  const dateVal = document.getElementById(`photo-date-${slotNum}`) ? document.getElementById(`photo-date-${slotNum}`).value : '';
+  const captionVal = document.getElementById(`photo-caption-${slotNum}`) ? document.getElementById(`photo-caption-${slotNum}`).value : '';
+  const imageBase64 = pendingSlotImages[slotNum] || null;
+
+  const prj = (allProjects || []).find(p => String(p.id) === String(currentPhotoProjectId)) || currentProject;
+  const cat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum);
+
+  const payload = {
+    project_id: String(currentPhotoProjectId),
+    project_name: prj ? prj.name : `Project ${currentPhotoProjectId}`,
+    slot: slotNum,
+    title: cat ? cat.title : `Slot ${slotNum}`,
+    date: dateVal || new Date().toISOString().split('T')[0],
+    caption: captionVal || '',
+    updated_by: 'วิศวกรโครงการ',
+    password: ''
+  };
+
+  if (imageBase64) {
+    payload.image_base64 = imageBase64;
+  }
+
+  try {
+    const res = await fetch(`/api/projects/${currentPhotoProjectId}/photos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const resData = await res.json();
+    if (res.ok && resData.success) {
+      delete pendingSlotImages[slotNum];
+      showToast(`บันทึกภาพถ่าย Slot ${slotNum} เรียบร้อยแล้ว!`, 'success');
+      await loadProjectPhotos(currentPhotoProjectId);
+    } else {
+      alert('บันทึกไม่สำเร็จ: ' + (resData.detail || resData.message || 'เกิดข้อผิดพลาด'));
+    }
+  } catch (err) {
+    alert('เกิดข้อผิดพลาดในการบันทึกภาพ: ' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  }
+}
+
+async function deletePhotoSlot(slotNum) {
+  if (!confirm(`คุณต้องการลบภาพถ่ายใน Slot ${slotNum} ใช่หรือไม่?`)) return;
+
+  delete pendingSlotImages[slotNum];
+  try {
+    const res = await fetch(`/api/projects/${currentPhotoProjectId}/photos/${slotNum}`, {
+      method: 'DELETE'
+    });
+    const resData = await res.json();
+    if (res.ok && resData.success) {
+      showToast(`ลบภาพ Slot ${slotNum} เรียบร้อยแล้ว`, 'success');
+      await loadProjectPhotos(currentPhotoProjectId);
+    } else {
+      alert('ลบไม่สำเร็จ: ' + (resData.detail || 'เกิดข้อผิดพลาด'));
+    }
+  } catch (err) {
+    alert('เกิดข้อผิดพลาด: ' + err.message);
+  }
+}
+
+function openPhotoLightbox(slotNum) {
+  const modal = document.getElementById('photo-lightbox-modal');
+  if (!modal) return;
+
+  const photo = (currentProjectPhotos || []).find(p => p.slot === slotNum) || {};
+  const cat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum) || { title: `Slot ${slotNum}` };
+  const photoUrl = pendingSlotImages[slotNum] || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
+  const photoDate = photo.date || (document.getElementById(`photo-date-${slotNum}`) ? document.getElementById(`photo-date-${slotNum}`).value : '');
+  const photoCaption = photo.caption || (document.getElementById(`photo-caption-${slotNum}`) ? document.getElementById(`photo-caption-${slotNum}`).value : '');
+  const driveId = photo.drive_file_id || '';
+
+  const imgEl = document.getElementById('lightbox-img');
+  const titleEl = document.getElementById('lightbox-title');
+  const dateEl = document.getElementById('lightbox-date');
+  const captionEl = document.getElementById('lightbox-caption');
+  const driveLinkEl = document.getElementById('lightbox-drive-link');
+
+  if (imgEl) imgEl.src = photoUrl;
+  if (titleEl) titleEl.innerText = cat.title;
+  if (dateEl) dateEl.innerText = photoDate ? `วันที่ถ่ายภาพ: ${photoDate}` : '';
+  if (captionEl) captionEl.innerText = photoCaption ? `คำบรรยาย: ${photoCaption}` : 'ไม่มีคำบรรยายเพิ่มเติม';
+
+  if (driveLinkEl) {
+    if (driveId) {
+      driveLinkEl.href = `https://drive.google.com/file/d/${driveId}/view`;
+      driveLinkEl.classList.remove('hidden');
+    } else {
+      driveLinkEl.classList.add('hidden');
+    }
+  }
+
+  modal.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closePhotoLightbox() {
+  const modal = document.getElementById('photo-lightbox-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+// Expose Photo functions to window
+window.renderPhotosTab = renderPhotosTab;
+window.populatePhotoProjectDropdown = populatePhotoProjectDropdown;
+window.onPhotoLotFilterChange = onPhotoLotFilterChange;
+window.onPhotoProjectChange = onPhotoProjectChange;
+window.reloadCurrentProjectPhotos = reloadCurrentProjectPhotos;
+window.loadProjectPhotos = loadProjectPhotos;
+window.handlePhotoSlotFileSelected = handlePhotoSlotFileSelected;
+window.savePhotoSlotData = savePhotoSlotData;
+window.deletePhotoSlot = deletePhotoSlot;
+window.openPhotoLightbox = openPhotoLightbox;
+window.closePhotoLightbox = closePhotoLightbox;
+
+// =========================================================================
+// ➕ ADD NEW PROJECT SITE (APPROACH C) - CAL PROGRESS & MILESTONE DATES
+// =========================================================================
+
+// Resolve 1..42 Type Code according to sheet 'Cal Progress'
+function resolveAddPrjTypeCode(installType, capacityKwp, voltageLevel) {
+  const it = String(installType || '').trim().toLowerCase();
+  const cap = parseFloat(capacityKwp) || 100.0;
+  const vl = String(voltageLevel || 'LV').trim().toUpperCase();
+  const isMv = (vl === 'MV');
+
+  if (it.includes('roof') && !it.includes('car')) {
+    if (!isMv) {
+      return cap < 250 ? 1 : (cap < 1000 ? 2 : 3);
+    } else {
+      return cap < 250 ? 22 : (cap < 1000 ? 23 : 24);
+    }
+  } else if (it.includes('car')) {
+    if (!isMv) {
+      return cap < 250 ? 19 : (cap < 1000 ? 20 : 21);
+    } else {
+      return cap < 250 ? 40 : (cap < 1000 ? 41 : 42);
+    }
+  } else if (it.includes('farm') && !it.includes('float')) {
+    if (!isMv) {
+      return cap < 250 ? 4 : (cap < 1000 ? 7 : 8);
+    } else {
+      return cap < 250 ? 25 : (cap < 1000 ? 28 : 29);
+    }
+  } else if (it.includes('fish') || it.includes('บ่อ')) {
+    if (!isMv) {
+      return cap < 250 ? 9 : (cap < 1000 ? 12 : 13);
+    } else {
+      return cap < 250 ? 30 : (cap < 1000 ? 33 : 34);
+    }
+  } else if (it.includes('float')) {
+    if (it.includes('farm')) {
+      return isMv ? 39 : 18;
+    }
+    if (!isMv) {
+      return cap < 250 ? 14 : (cap < 1000 ? 17 : 18);
+    } else {
+      return cap < 250 ? 35 : (cap < 1000 ? 38 : 39);
+    }
+  }
+  return 1;
+}
+
+let addPrjDebounceTimer = null;
+function onAddPrjParamChange() {
+  clearTimeout(addPrjDebounceTimer);
+  addPrjDebounceTimer = setTimeout(() => {
+    applyAddPrjParamChange();
+  }, 100);
+}
+
+async function applyAddPrjParamChange() {
+  const installEl = document.getElementById('add-prj-install-type');
+  const capEl = document.getElementById('add-prj-capacity');
+  const voltEl = document.getElementById('add-prj-voltage-level');
+  const typeCodeEl = document.getElementById('add-prj-type-code');
+  const typeBadgeEl = document.getElementById('add-prj-type-badge');
+  const typeDescTextEl = document.getElementById('add-prj-type-desc-text');
+
+  const installType = installEl ? installEl.value : 'Solar Rooftop';
+  const cap = parseFloat(capEl ? capEl.value : 100) || 100;
+  const volt = voltEl ? voltEl.value : 'LV';
+
+  const typeCode = resolveAddPrjTypeCode(installType, cap, volt);
+  if (typeCodeEl) typeCodeEl.value = typeCode;
+  if (typeBadgeEl) typeBadgeEl.innerText = `Type ${typeCode} (${volt})`;
+
+  const voltLabel = volt === 'LV' ? 'แรงดันต่ำ (ตู้ MDB เดิม)' : 'แรงดันปานกลาง (หม้อแปลง Step-Up)';
+  if (typeDescTextEl) {
+    typeDescTextEl.innerText = `Type ${typeCode}: ${installType} [${voltLabel}] - Cal Progress`;
+  }
+
+  await populateMilestoneWeightsFromCalProgress(typeCode, installType, cap, volt);
+}
+
+async function populateMilestoneWeightsFromCalProgress(typeCode, installType, cap, volt) {
+  let weights = null;
+  try {
+    const res = await fetch(`/api/cal-progress-weights?installation_type=${encodeURIComponent(installType)}&capacity_kwp=${cap}&voltage_level=${volt}`);
+    if (res.ok) {
+      const data = await res.json();
+      weights = data.weights;
+    }
+  } catch (e) {
+    console.warn('Failed to fetch cal-progress-weights from API, using client fallback:', e);
+  }
+
+  if (!weights && cachedWeightMatrix && cachedWeightMatrix[String(typeCode)]) {
+    weights = cachedWeightMatrix[String(typeCode)];
+  }
+
+  if (!weights) return;
+
+  const weightInputs = document.querySelectorAll('.add-prj-ms-weight');
+  weightInputs.forEach(inp => {
+    const mName = inp.dataset.name;
+    if (mName && weights[mName] !== undefined) {
+      inp.value = (weights[mName] * 100).toFixed(1);
+    }
+  });
+
+  calculateAddPrjWeightTotal();
+}
+
+function resetMilestoneWeightsFromCalProgress() {
+  const installEl = document.getElementById('add-prj-install-type');
+  const capEl = document.getElementById('add-prj-capacity');
+  const voltEl = document.getElementById('add-prj-voltage-level');
+  const installType = installEl ? installEl.value : 'Solar Rooftop';
+  const cap = parseFloat(capEl ? capEl.value : 100) || 100;
+  const volt = voltEl ? voltEl.value : 'LV';
+  const typeCode = resolveAddPrjTypeCode(installType, cap, volt);
+
+  populateMilestoneWeightsFromCalProgress(typeCode, installType, cap, volt);
+  showToast('รีเซ็ตน้ำหนักตามตาราง Cal Progress เรียบร้อยแล้ว', 'info');
+}
+
+function calculateAddPrjWeightTotal() {
+  const weightInputs = document.querySelectorAll('.add-prj-ms-weight');
+  let total = 0.0;
+  weightInputs.forEach(inp => {
+    const val = parseFloat(inp.value);
+    if (!isNaN(val)) total += val;
+  });
+
+  const totalEl = document.getElementById('add-prj-weight-total');
+  const statusEl = document.getElementById('add-prj-weight-status');
+  if (!totalEl || !statusEl) return;
+
+  const roundTotal = Math.round(total * 10) / 10;
+  totalEl.innerText = `${roundTotal.toFixed(1)}%`;
+
+  if (Math.abs(roundTotal - 100.0) <= 0.2) {
+    totalEl.className = 'font-bold font-mono px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800';
+    statusEl.innerHTML = '<i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-emerald-600"></i> <span class="text-emerald-700">ถูกต้องครบ 100%</span>';
+  } else {
+    totalEl.className = 'font-bold font-mono px-2 py-0.5 rounded-lg bg-amber-100 text-amber-900 border border-amber-300';
+    statusEl.innerHTML = `<i data-lucide="alert-circle" class="w-3.5 h-3.5 text-amber-600"></i> <span class="text-amber-700 font-semibold">น้ำหนักรวม ${roundTotal.toFixed(1)}% (ควรเท่ากับ 100%)</span>`;
+  }
+  lucide.createIcons();
+}
+
+function openAddProjectModal() {
+  const modal = document.getElementById('add-project-modal');
+  if (!modal) {
+    console.error('Modal #add-project-modal not found');
+    return;
+  }
+
+  // 1. Show modal immediately
+  modal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  try {
+    // Auto-calculate next order_no
+    const maxOrder = (allProjects || []).reduce((max, p) => {
+      const o = parseInt(p.order_no);
+      return !isNaN(o) && o > max ? o : max;
+    }, 0);
+    const nextOrderEl = document.getElementById('add-prj-order');
+    if (nextOrderEl) nextOrderEl.value = maxOrder > 0 ? maxOrder + 1 : ((allProjects ? allProjects.length : 0) + 1);
+
+    // Populate Lot select with existing lots
+    const lotSelect = document.getElementById('add-prj-lot-select');
+    if (lotSelect) {
+      const lotSet = new Set();
+      (allProjects || []).forEach(p => {
+        const l = (p.lot || '').trim();
+        if (l && !l.toUpperCase().startsWith('CC')) lotSet.add(l);
+      });
+      ['Lot 1', 'Lot 2', 'Lot 3', 'Lot 4', 'Lot 5'].forEach(l => lotSet.add(l));
+      const sortedLots = Array.from(lotSet).sort();
+
+      lotSelect.innerHTML = sortedLots.map(l => `<option value="${l}">${l}</option>`).join('') +
+        `<option value="__custom__">➕ ระบุ Lot ใหม่...</option>`;
+    }
+
+    // Hide custom lot text input
+    const customLotInput = document.getElementById('add-prj-lot-custom');
+    if (customLotInput) {
+      customLotInput.value = '';
+      customLotInput.classList.add('hidden');
+      customLotInput.required = false;
+    }
+
+    // Pre-fill default dates: today and today + 90 days
+    const today = new Date();
+    const finish = new Date();
+    finish.setDate(today.getDate() + 90);
+    const startStr = today.toISOString().split('T')[0];
+    const finishStr = finish.toISOString().split('T')[0];
+
+    const planStartEl = document.getElementById('add-prj-plan-start');
+    const planFinishEl = document.getElementById('add-prj-plan-finish');
+    if (planStartEl) planStartEl.value = startStr;
+    if (planFinishEl) planFinishEl.value = finishStr;
+
+    // First build rows and set initial dates
+    buildAddPrjMilestoneRows();
+    updateAddPrjMilestoneDates();
+
+    // Resolve type code and populate weights from Cal Progress
+    applyAddPrjParamChange();
+
+    // Pre-fill password from localStorage
+    const pwdEl = document.getElementById('add-prj-password');
+    if (pwdEl) {
+      pwdEl.value = localStorage.getItem('kpg_editor_pwd') || 'KPGEditor';
+    }
+
+    lucide.createIcons();
+
+    // Focus project name
+    setTimeout(() => {
+      const nameEl = document.getElementById('add-prj-name');
+      if (nameEl) nameEl.focus();
+    }, 100);
+  } catch (err) {
+    console.error('Error opening add project modal:', err);
+  }
+}
+
+function closeAddProjectModal() {
+  const modal = document.getElementById('add-project-modal');
+  if (modal) modal.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+function handleAddLotChange() {
+  const select = document.getElementById('add-prj-lot-select');
+  const customInput = document.getElementById('add-prj-lot-custom');
+  if (!select || !customInput) return;
+
+  if (select.value === '__custom__') {
+    customInput.classList.remove('hidden');
+    customInput.required = true;
+    customInput.focus();
+  } else {
+    customInput.classList.add('hidden');
+    customInput.required = false;
+  }
+}
+
+// 33 Standard Milestone Names Fallback
+const DEFAULT_MILESTONE_NAMES = [
+  'CPF ส่งมอบพื้นที่และยินยอมการใช้ที่ดิน ATV', 'อ.1', 'รง.4', 'Mini COP REPORT ( ERC )',
+  'COP REPORT ( ERC )', 'พค.2', 'ใบยกเว้นผลิตไฟฟ้า', 'ใบผลิตไฟฟ้า', 'ขนานไฟฟ้า',
+  'Soiling Test/Water Test/ Roofing Test', 'For Construction Design', 'Pocurement',
+  'Site Prepareration and Mobilization', '0.Inverter Station/Pump Station construction',
+  '1.MDB&INVERTER Shelf', '2.Foundation Installatioin', '3.Mounting structure installation',
+  '4.Fence&Gate', '5.PV module installation', '6.Inverter Installation',
+  '7.Electrical Panel Installation', '8.Electrical Conduit and Rackway Installation',
+  '9.Grounding System Installation', '10.Cabling & Termination PV to Inverters',
+  '11.Cabling & Termination Inverters to SMDB', '12.Weather Station Installation',
+  '13.Cabling & Termination SMDB to Ex MDB (Tie IN)', '14.Transformer Installation and Tie in',
+  '15.Protection Relay Panel & CT PT MV/LV', '16.Cabling & Termination Protection System',
+  '17.Water conduit and pump system Installation', 'Testing & Commissioning', 'Punch list'
+];
+
+function buildAddPrjMilestoneRows() {
+  const tbody = document.getElementById('add-prj-milestones-tbody');
+  if (!tbody) return;
+
+  const refPrj = (allProjects && allProjects.find(p => p.milestones && p.milestones.length === 33)) || (allProjects && allProjects[0]) || {};
+  const standardMilestones = refPrj.milestones || [];
+
+  const typeCodeEl = document.getElementById('add-prj-type-code');
+  const typeCode = typeCodeEl ? typeCodeEl.value : '1';
+  const weights = (cachedWeightMatrix && cachedWeightMatrix[String(typeCode)]) || {};
+
+  let rowsHtml = '';
+  for (let idx = 0; idx < 33; idx++) {
+    const m = standardMilestones[idx] || {};
+    const name = m.name || DEFAULT_MILESTONE_NAMES[idx] || `Milestone ${idx + 1}`;
+    const cat = m.category || 'งานทั่วไป';
+    
+    let wNum = 0.0;
+    if (weights[name] !== undefined) {
+      wNum = weights[name] * 100;
+    } else if (m.weight !== undefined) {
+      wNum = m.weight * 100;
+    }
+    const safeName = name.replace(/"/g, '&quot;');
+
+    rowsHtml += `
+      <tr class="hover:bg-slate-50 transition border-b border-slate-100 last:border-b-0">
+        <td class="py-1.5 px-2 text-center text-slate-400 font-mono text-[10px]">${idx + 1}</td>
+        <td class="py-1.5 px-2 font-medium text-slate-800 text-[11px]">
+          <div class="leading-tight">${name}</div>
+          <span class="text-[9px] text-slate-400 font-normal">${cat}</span>
+        </td>
+        <td class="py-1.5 px-2 text-center">
+          <div class="inline-flex items-center justify-center space-x-0.5">
+            <input type="number" step="0.1" min="0" max="100" value="${wNum.toFixed(1)}" class="add-prj-ms-weight w-14 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-emerald-500 rounded-lg px-1.5 py-1 text-center font-mono text-emerald-800 font-bold text-[11px] focus:ring-1 focus:ring-emerald-500 transition" data-index="${idx}" data-name="${safeName}" oninput="calculateAddPrjWeightTotal()">
+            <span class="text-[10px] text-slate-400 font-semibold">%</span>
+          </div>
+        </td>
+        <td class="py-1.5 px-2">
+          <input type="date" class="add-prj-ms-start w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-emerald-500 rounded-lg px-2 py-1 text-[11px] font-mono focus:ring-1 focus:ring-emerald-500 transition" data-index="${idx}" data-name="${safeName}">
+        </td>
+        <td class="py-1.5 px-2">
+          <input type="date" class="add-prj-ms-finish w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-emerald-500 rounded-lg px-2 py-1 text-[11px] font-mono focus:ring-1 focus:ring-emerald-500 transition" data-index="${idx}" data-name="${safeName}">
+        </td>
+      </tr>
+    `;
+  }
+  tbody.innerHTML = rowsHtml;
+  calculateAddPrjWeightTotal();
+}
+
+function updateAddPrjMilestoneDates() {
+  const startEl = document.getElementById('add-prj-plan-start');
+  const finishEl = document.getElementById('add-prj-plan-finish');
+  if (!startEl || !finishEl || !startEl.value || !finishEl.value) return;
+
+  const sDate = new Date(startEl.value);
+  const fDate = new Date(finishEl.value);
+  if (isNaN(sDate.getTime()) || isNaN(fDate.getTime())) return;
+
+  const totalDays = Math.max(14, Math.round((fDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24)));
+  const startInputs = document.querySelectorAll('.add-prj-ms-start');
+  const finishInputs = document.querySelectorAll('.add-prj-ms-finish');
+  const numM = finishInputs.length || 33;
+
+  for (let i = 0; i < numM; i++) {
+    const offsetPct = (i / Math.max(1, numM - 1)) * 0.75;
+    const durPct = 0.25;
+    const mStartDays = Math.round(totalDays * offsetPct);
+    const mDurDays = Math.max(5, Math.round(totalDays * durPct));
+    let mFinishDays = mStartDays + mDurDays;
+    if (i === numM - 1 || mFinishDays > totalDays) {
+      mFinishDays = totalDays;
+    }
+
+    const mStartDate = new Date(sDate.getTime() + mStartDays * 24 * 60 * 60 * 1000);
+    const mFinishDate = new Date(sDate.getTime() + mFinishDays * 24 * 60 * 60 * 1000);
+
+    const sYYYY = mStartDate.getFullYear();
+    const sMM = String(mStartDate.getMonth() + 1).padStart(2, '0');
+    const sDD = String(mStartDate.getDate()).padStart(2, '0');
+
+    const fYYYY = mFinishDate.getFullYear();
+    const fMM = String(mFinishDate.getMonth() + 1).padStart(2, '0');
+    const fDD = String(mFinishDate.getDate()).padStart(2, '0');
+
+    if (startInputs[i]) startInputs[i].value = `${sYYYY}-${sMM}-${sDD}`;
+    if (finishInputs[i]) finishInputs[i].value = `${fYYYY}-${fMM}-${fDD}`;
+  }
+}
+
+async function submitAddProject(e) {
+  e.preventDefault();
+
+  const nameEl = document.getElementById('add-prj-name');
+  const orderEl = document.getElementById('add-prj-order');
+  const lotSelect = document.getElementById('add-prj-lot-select');
+  const lotCustom = document.getElementById('add-prj-lot-custom');
+  const capEl = document.getElementById('add-prj-capacity');
+  const installEl = document.getElementById('add-prj-install-type');
+  const voltEl = document.getElementById('add-prj-voltage-level');
+  const buEl = document.getElementById('add-prj-bu');
+  const typeCodeEl = document.getElementById('add-prj-type-code');
+  const startEl = document.getElementById('add-prj-plan-start');
+  const finishEl = document.getElementById('add-prj-plan-finish');
+  const pwdEl = document.getElementById('add-prj-password');
+  const submitBtn = document.getElementById('modal-add-prj-submit-btn');
+
+  const name = (nameEl ? nameEl.value : '').trim();
+  if (!name) {
+    showToast('กรุณาระบุชื่อโครงการ', 'error');
+    if (nameEl) nameEl.focus();
+    return;
+  }
+
+  let lot = lotSelect ? lotSelect.value : 'Lot 1';
+  if (lot === '__custom__') {
+    lot = (lotCustom ? lotCustom.value : '').trim();
+    if (!lot) {
+      showToast('กรุณาระบุชื่อ Lot ใหม่', 'error');
+      if (lotCustom) lotCustom.focus();
+      return;
+    }
+  }
+
+  const capacity = parseFloat(capEl ? capEl.value : 0);
+  if (isNaN(capacity) || capacity <= 0) {
+    showToast('กรุณาระบุกำลังการผลิต (kWp) ให้ถูกต้อง', 'error');
+    if (capEl) capEl.focus();
+    return;
+  }
+
+  const password = pwdEl ? pwdEl.value.trim() : '';
+  if (!password) {
+    showToast('กรุณาระบุรหัสผ่านผู้แก้ไข', 'error');
+    if (pwdEl) pwdEl.focus();
+    return;
+  }
+  localStorage.setItem('kpg_editor_pwd', password);
+
+  // Collect individual milestone completion dates and weights
+  const startInputs = document.querySelectorAll('.add-prj-ms-start');
+  const finishInputs = document.querySelectorAll('.add-prj-ms-finish');
+  const weightInputs = document.querySelectorAll('.add-prj-ms-weight');
+
+  const customMilestones = [];
+  finishInputs.forEach((input, i) => {
+    const idx = parseInt(input.dataset.index);
+    const mName = input.dataset.name;
+    const pFinish = input.value;
+    const pStart = startInputs[i] ? startInputs[i].value : null;
+    const wVal = weightInputs[i] ? (parseFloat(weightInputs[i].value) / 100.0) : undefined;
+
+    customMilestones.push({
+      index: idx,
+      name: mName,
+      weight: !isNaN(wVal) ? wVal : undefined,
+      planned_start: pStart || null,
+      planned_finish: pFinish || null
+    });
+  });
+
+  const payload = {
+    name: name,
+    order_no: orderEl && orderEl.value ? parseInt(orderEl.value) : null,
+    lot: lot,
+    capacity_kwp: capacity,
+    installation_type: installEl ? installEl.value : 'Solar Rooftop',
+    voltage_level: voltEl ? voltEl.value : 'LV',
+    business_unit: (buEl && buEl.value.trim()) ? buEl.value.trim() : 'ทั่วไป',
+    type_code: typeCodeEl ? parseInt(typeCodeEl.value) : 1,
+    planned_start: startEl ? startEl.value : null,
+    planned_finish: finishEl ? finishEl.value : null,
+    password: password,
+    milestones: customMilestones
+  };
+
+  const origBtnContent = submitBtn ? submitBtn.innerHTML : '';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>กำลังบันทึกและสร้าง 33 Milestones...</span>`;
+    lucide.createIcons();
+  }
+
+  try {
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'ไม่สามารถสร้างโครงการได้');
+    }
+
+    closeAddProjectModal();
+    showToast(data.message || `เพิ่มไซต์งาน '${name}' สำเร็จแล้ว!`, 'success');
+
+    // Reload all data
+    await loadInitialData();
+
+    // Navigate to Project Detail Tab (Tab 2) and select this new project immediately!
+    const newProjectId = data.project ? data.project.id : null;
+    if (newProjectId) {
+      switchTab('project');
+      await selectProject(newProjectId);
+    }
+  } catch (err) {
+    console.error('Error creating project:', err);
+    showToast(err.message || 'เกิดข้อผิดพลาดในการสร้างโครงการ', 'error');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = origBtnContent;
+      lucide.createIcons();
+    }
+  }
+}
+
+window.openAddProjectModal = openAddProjectModal;
+window.closeAddProjectModal = closeAddProjectModal;
+window.handleAddLotChange = handleAddLotChange;
+window.onAddPrjParamChange = onAddPrjParamChange;
+window.updateAddPrjMilestoneDates = updateAddPrjMilestoneDates;
+window.resetMilestoneWeightsFromCalProgress = resetMilestoneWeightsFromCalProgress;
+window.calculateAddPrjWeightTotal = calculateAddPrjWeightTotal;
+window.submitAddProject = submitAddProject;
+
+

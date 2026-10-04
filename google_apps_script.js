@@ -20,8 +20,9 @@
  * 4. นำไปใช้งานได้ทันที! เมื่อมีการพิมพ์แก้ไข % หรือวันที่ในชีต Progress หน้าเว็บ Render จะอัปเดตแบบ Real-time ทันทีครับ
  */
 
-// 🌐 URL ของ Web Dashboard บน Render
+// 🌐 URL และ Secret Key ของ Web Dashboard บน Render
 const WEBHOOK_DASHBOARD_URL = 'https://kpgreenergy-planner-dev01.onrender.com/api/webhook';
+const WEBHOOK_SECRET = 'kpg_sec_webhook_2026';
 
 /**
  * 1. Installable Trigger: ทำงานทุกครั้งที่มีการพิมพ์/แก้ไขในเซลล์ของ Google Sheet
@@ -104,9 +105,66 @@ function installedOnEdit(e) {
         }
       }
     }
+    // ตรวจสอบชีต Weekly_Issues เมื่อมีการพิมพ์หรือแก้ไขปัญหาใน Google Sheet
+    else if (sNameLower.includes('issue')) {
+      const editRow = e.range.getRow();
+      if (editRow >= 2) {
+        const rowVals = sheet.getRange(editRow, 1, 1, 14).getValues()[0];
+        const issueId = String(rowVals[0] || '').trim();
+        const desc = String(rowVals[8] || '').trim();
+        if (issueId && desc) {
+          notifyWebDashboard({
+            action: 'add_issue',
+            issue: {
+              id: issueId,
+              project_id: String(rowVals[1] || '').trim(),
+              site_name: String(rowVals[2] || '').trim(),
+              lot: String(rowVals[3] || '').trim(),
+              week: String(rowVals[4] || '').trim(),
+              start_date: formatSheetDate(rowVals[5]),
+              end_date: formatSheetDate(rowVals[6]) || null,
+              category: String(rowVals[7] || '').trim(),
+              description: desc,
+              action_plan: String(rowVals[9] || '').trim(),
+              status: String(rowVals[10] || 'OPEN').trim().toUpperCase(),
+              severity: String(rowVals[11] || 'MEDIUM').trim().toUpperCase(),
+              reported_by: String(rowVals[12] || 'วิศวกรโครงการ').trim()
+            }
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('installedOnEdit error: ' + err);
   }
+}
+
+/**
+ * ฟังก์ชันดึงรายการปัญหาทั้งหมดจากชีต Weekly_Issues
+ */
+function getAllIssuesFromSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const issueSheet = ss.getSheetByName('Weekly_Issues') || ss.getSheetByName('Issues');
+  if (!issueSheet) return [];
+  const lastRow = issueSheet.getLastRow();
+  if (lastRow <= 1) return [];
+  const rows = issueSheet.getRange(2, 1, lastRow - 1, 14).getValues();
+  return rows.map(r => ({
+    id: String(r[0] || '').trim(),
+    project_id: String(r[1] || '').trim(),
+    site_name: String(r[2] || '').trim(),
+    lot: String(r[3] || '').trim(),
+    week: String(r[4] || '').trim(),
+    start_date: formatSheetDate(r[5]),
+    end_date: formatSheetDate(r[6]) || null,
+    category: String(r[7] || '').trim(),
+    description: String(r[8] || '').trim(),
+    action_plan: String(r[9] || '').trim(),
+    status: String(r[10] || 'OPEN').trim().toUpperCase(),
+    severity: String(r[11] || 'MEDIUM').trim().toUpperCase(),
+    reported_by: String(r[12] || '').trim(),
+    updated_at: String(r[13] || '')
+  })).filter(i => i.id);
 }
 
 /**
@@ -143,12 +201,30 @@ function onEdit(e) {
 }
 
 /**
- * 2. GET Request: รองรับทั้งดึงข้อมูลด่วน และรับคำสั่งบันทึกความเร็วสูง (30ms) จากหน้าเว็บ
+ * 2. GET Request: รองรับดึงข้อมูลด่วน, ดึงปัญหาทั้งหมด และรับคำสั่งบันทึก
  */
 function doGet(e) {
   try {
-    if (e && e.parameter && (e.parameter.action === 'update_milestone' || e.parameter.action === 'save_progress')) {
-      return handleUpdateMilestone(e.parameter);
+    if (e && e.parameter) {
+      if (e.parameter.action === 'update_milestone' || e.parameter.action === 'save_progress') {
+        return handleUpdateMilestone(e.parameter);
+      }
+      if (e.parameter.action === 'get_issues') {
+        return createJsonResponse({ status: 'success', issues: getAllIssuesFromSheet() });
+      }
+      if (e.parameter.action === 'get_photos') {
+        return handleGetPhotos(e.parameter);
+      }
+      if (e.parameter.action === 'upload_photo' || e.parameter.action === 'save_photo') {
+        return handlePhotoUpload(e.parameter);
+      }
+      if (e.parameter.action === 'create_project' || e.parameter.action === 'add_project') {
+        return handleCreateProject(e.parameter);
+      }
+      if (e.parameter.action === 'get_sheets') {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        return createJsonResponse({ status: 'success', sheets: ss.getSheets().map(s => s.getName()) });
+      }
     }
     return createJsonResponse({ status: 'success', message: 'KPGreenergy 2-Way Sync Web App is Live and Ready!' });
   } catch (err) {
@@ -176,8 +252,20 @@ function doPost(e) {
       return handleUpdateMilestone(data);
     }
 
+    if (data && (data.action === 'create_project' || data.action === 'add_project')) {
+      return handleCreateProject(data);
+    }
+
     if (data && (data.action === 'add_issue' || data.action === 'update_issue')) {
       return handleIssueSync(data);
+    }
+
+    if (data && (data.action === 'upload_photo' || data.action === 'save_photo')) {
+      return handlePhotoUpload(data);
+    }
+
+    if (data && data.action === 'get_photos') {
+      return handleGetPhotos(data);
     }
 
     return createJsonResponse({ status: 'error', message: 'Invalid action' });
@@ -187,7 +275,145 @@ function doPost(e) {
 }
 
 /**
- * บันทึกปัญหาลงในชีต Weekly_Issues
+ * ฟังก์ชันช่วยค้นหาชีตตามชื่ออย่างยืดหยุ่น (ป้องกันปัญหาตัวพิมพ์เล็ก-ใหญ่ หรือมีช่องว่าง)
+ */
+function findSheetFlexible(ss, targetNames) {
+  if (!ss) return null;
+  const allSheets = ss.getSheets();
+  const normalizedTargets = targetNames.map(t => String(t).trim().toUpperCase());
+  
+  // 1. Exact match (case-insensitive)
+  for (let i = 0; i < allSheets.length; i++) {
+    const sName = allSheets[i].getName().trim().toUpperCase();
+    if (normalizedTargets.includes(sName)) {
+      return allSheets[i];
+    }
+  }
+  // 2. Substring match
+  for (let i = 0; i < allSheets.length; i++) {
+    const sName = allSheets[i].getName().trim().toUpperCase();
+    for (let j = 0; j < normalizedTargets.length; j++) {
+      if (sName.includes(normalizedTargets[j])) {
+        return allSheets[i];
+      }
+    }
+  }
+  return null;
+}
+
+function findPlanSheet(ss) {
+  return findSheetFlexible(ss, ['MASTER', 'Master', 'Plan', 'PLAN', 'Master Plan', 'MasterPlan']) || ss.getSheetByName('MASTER') || ss.getSheetByName('Plan');
+}
+
+function findProgressSheet(ss) {
+  return findSheetFlexible(ss, ['data Progress', 'Progress', 'PROGRESS', 'Data Progress']) || ss.getSheetByName('data Progress') || ss.getSheetByName('Progress') || ss.getActiveSheet();
+}
+
+/**
+ * บันทึกการสร้าง/อัปเดตโครงการใหม่ลงใน Google Sheet (ชีต MASTER/Plan และ data Progress)
+ */
+function handleCreateProject(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const planSheet = findPlanSheet(ss);
+    const progSheet = findProgressSheet(ss);
+
+    const orderNo = data.order_no || '';
+    const projectName = String(data.name || data.project_name || '').trim();
+    if (!projectName) {
+      return createJsonResponse({ status: 'error', message: 'กรุณาระบุชื่อโครงการ' });
+    }
+
+    const bu = data.business_unit || 'ทั่วไป';
+    const lot = data.lot || 'Lot 1';
+    const capacity = parseFloat(data.capacity_kwp || 0);
+    const installType = data.installation_type || 'Solar Rooftop';
+    const typeCode = parseInt(data.type_code || 1);
+
+    // 1. บันทึกลงในชีต data Progress (หรือ Progress)
+    let progTargetRow = -1;
+    if (progSheet) {
+      const lastRow = progSheet.getLastRow();
+      if (lastRow >= 6) {
+        const existingNames = progSheet.getRange(6, 4, lastRow - 5, 1).getValues();
+        for (let i = 0; i < existingNames.length; i++) {
+          if (String(existingNames[i][0]).trim().toLowerCase() === projectName.toLowerCase()) {
+            progTargetRow = i + 6;
+            break;
+          }
+        }
+      }
+
+      if (progTargetRow === -1) {
+        progTargetRow = Math.max(6, progSheet.getLastRow() + 1);
+      }
+
+      // Col A: BU, Col B: Empty, Col C: Order No, Col D: Name, Col E: Lot, Col F: Capacity, Col G: Installation
+      progSheet.getRange(progTargetRow, 1, 1, 7).setValues([[
+        bu, '', orderNo, projectName, lot, capacity, installType
+      ]]);
+    }
+
+    // 2. บันทึกลงในชีต MASTER (หรือ Plan)
+    let planTargetRow = -1;
+    if (planSheet) {
+      const lastRow = planSheet.getLastRow();
+      if (lastRow >= 6) {
+        const existingNames = planSheet.getRange(6, 3, lastRow - 5, 1).getValues();
+        for (let i = 0; i < existingNames.length; i++) {
+          if (String(existingNames[i][0]).trim().toLowerCase() === projectName.toLowerCase()) {
+            planTargetRow = i + 6;
+            break;
+          }
+        }
+      }
+
+      if (planTargetRow === -1) {
+        planTargetRow = Math.max(6, planSheet.getLastRow() + 1);
+      }
+
+      // Col 1: BU, Col 2: Order No, Col 3: Name, Col 4: Lot, Col 5: Capacity, Col 6: Install, Col 7: Type Code
+      planSheet.getRange(planTargetRow, 1, 1, 7).setValues([[
+        bu, orderNo, projectName, lot, capacity, installType, typeCode
+      ]]);
+
+      // หากมีข้อมูล milestones ส่งมาด้วย ให้กรอก Planned Start / Finish / Weight ลงในแต่ละช่องแบบ Batch Write
+      if (data.milestones && Array.isArray(data.milestones)) {
+        const milestoneValues = [];
+        for (let mIdx = 0; mIdx < Math.min(data.milestones.length, 33); mIdx++) {
+          const m = data.milestones[mIdx];
+          let w = parseFloat(m.weight || 0);
+          if (w > 1.0) w = w / 100.0;
+          milestoneValues.push(m.planned_start || '');
+          milestoneValues.push(m.planned_finish || '');
+          milestoneValues.push(w);
+        }
+        if (milestoneValues.length > 0) {
+          planSheet.getRange(planTargetRow, 8, 1, milestoneValues.length).setValues([milestoneValues]);
+        }
+      }
+    }
+
+    // 3. บันทึก Log ลง Log_Updates
+    const logSheet = ss.getSheetByName('Log_Updates');
+    if (logSheet) {
+      const nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+      const planNameUsed = planSheet ? planSheet.getName() : 'MASTER';
+      const progNameUsed = progSheet ? progSheet.getName() : 'Progress';
+      logSheet.appendRow([nowStr, 'Web Dashboard', projectName, 'All 33 Milestones', '0%', data.planned_start || '', data.planned_finish || '', 'สร้าง/อัปเดตลง ' + planNameUsed + ' และ ' + progNameUsed, '']);
+    }
+
+    return createJsonResponse({
+      status: 'success',
+      message: 'สร้าง/บันทึกโครงการ ' + projectName + ' ลงในชีต ' + (planSheet ? planSheet.getName() : 'MASTER') + ' และ ' + (progSheet ? progSheet.getName() : 'Progress') + ' สำเร็จแล้ว'
+    });
+  } catch (err) {
+    return createJsonResponse({ status: 'error', message: err.toString() });
+  }
+}
+
+/**
+ * บันทึกปัญหาลงในชีต Weekly_Issues (พร้อมระบบป้องกัน ID ชนกันระหว่างโครงการ)
  */
 function handleIssueSync(data) {
   try {
@@ -202,23 +428,47 @@ function handleIssueSync(data) {
     }
     
     const issue = data.issue || data;
-    const issueId = String(issue.id || '').trim();
-    if (!issueId) return createJsonResponse({ status: 'error', message: 'Missing issue id' });
+    let issueId = String(issue.id || '').trim();
+    const reqPrjId = String(issue.project_id || '').trim();
     
     const lastRow = issueSheet.getLastRow();
     let foundRow = -1;
+    let maxNum = 0;
+    
     if (lastRow > 1) {
-      const idColValues = issueSheet.getRange(2, 1, lastRow - 1, 1).getValues();
-      for (let i = 0; i < idColValues.length; i++) {
-        if (String(idColValues[i][0]).trim() === issueId) {
-          foundRow = i + 2;
-          break;
+      const existingData = issueSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+      for (let i = 0; i < existingData.length; i++) {
+        const rowId = String(existingData[i][0]).trim();
+        const rowPrj = String(existingData[i][1]).trim();
+        
+        if (rowId.startsWith('ISS-')) {
+          const numPart = parseInt(rowId.replace('ISS-', ''));
+          if (!isNaN(numPart) && numPart > maxNum) {
+            maxNum = numPart;
+          }
+        }
+        
+        if (rowId === issueId && issueId !== '') {
+          // If action is update_issue OR belongs to same project -> update existing row
+          if (data.action === 'update_issue' || reqPrjId === rowPrj || !rowPrj || !reqPrjId) {
+            foundRow = i + 2;
+          } else {
+            // Collision: Same ID but DIFFERENT project! Must not overwrite!
+            foundRow = -2; // Marker for collision
+          }
         }
       }
     }
     
+    if (foundRow === -2 || !issueId) {
+      // Reassign new unique ID to avoid collision
+      maxNum += 1;
+      issueId = 'ISS-' + String(maxNum).padStart(3, '0');
+      issue.id = issueId;
+    }
+    
     const rowValues = [
-      issue.id,
+      issueId,
       issue.project_id || '',
       issue.site_name || '',
       issue.lot || '',
@@ -252,7 +502,7 @@ function handleIssueSync(data) {
 function handleUpdateMilestone(data) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const progSheet = ss.getSheetByName('Progress') || ss.getSheetByName('data Progress') || ss.getActiveSheet();
+    const progSheet = findProgressSheet(ss);
 
     if (!progSheet) {
       return createJsonResponse({ status: 'error', message: 'ไม่พบชีต Progress' });
@@ -314,10 +564,27 @@ function handleUpdateMilestone(data) {
       targetCol = 8; // fallback to Milestone 0
     }
 
-    // เขียนค่าลงเซลล์ทันที
-    if (actualStart) progSheet.getRange(targetRow, targetCol).setValue(actualStart);
-    if (actualFinish) progSheet.getRange(targetRow, targetCol + 1).setValue(actualFinish);
-    progSheet.getRange(targetRow, targetCol + 2).setValue(actualPct);
+    // เขียนค่าลงเซลล์ทันทีแบบ Atomic Call (1 ครั้งแทนที่จะเป็น 3 ครั้ง เพื่อความเร็วสูงสุดและป้องกันข้อมูลขาดตอน)
+    const currentCells = progSheet.getRange(targetRow, targetCol, 1, 3).getValues()[0];
+    const newStart = actualStart || currentCells[0];
+    let newFinish = actualFinish || currentCells[1];
+    if (actualPct < 1.0) {
+      newFinish = ''; // เคลียร์วันเสร็จสิ้นหากความคืบหน้ายังไม่ถึง 100%
+    } else if (!newFinish) {
+      newFinish = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd');
+    }
+    progSheet.getRange(targetRow, targetCol, 1, 3).setValues([[newStart, newFinish, actualPct]]);
+
+    // หากมีการระบุ planned_finish หรือ planned_start ให้อัปเดตลงชีต MASTER/Plan ด้วย
+    if (data.planned_start || data.planned_finish) {
+      const planSheet = findPlanSheet(ss);
+      if (planSheet && targetRow > 0 && targetCol > 0) {
+        const planCells = planSheet.getRange(targetRow, targetCol, 1, 2).getValues()[0];
+        const pStart = data.planned_start || planCells[0];
+        const pFinish = data.planned_finish || planCells[1];
+        planSheet.getRange(targetRow, targetCol, 1, 2).setValues([[pStart, pFinish]]);
+      }
+    }
 
     // บันทึก Log ลงชีต Log_Updates (ถ้ามีชีตนี้)
     const logSheet = ss.getSheetByName('Log_Updates');
@@ -345,6 +612,9 @@ function notifyWebDashboard(payload) {
     const res = UrlFetchApp.fetch(WEBHOOK_DASHBOARD_URL, {
       method: 'post',
       contentType: 'application/json',
+      headers: {
+        'X-Webhook-Secret': WEBHOOK_SECRET
+      },
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
     });
@@ -406,4 +676,198 @@ function testCreateIssueSheet() {
   Logger.log('ผลลัพธ์: ' + JSON.stringify(res));
   Logger.log('✅ ดูที่แถบด้านล่างสุดของ Google Sheet จะมีแท็บแผ่นงานชื่อ "Weekly_Issues" เพิ่มขึ้นมาแล้วครับ!');
 }
+
+/**
+ * บันทึกรูปภาพขึ้น Google Drive และเก็บ Metadata ในแท็บชีต Project_Photos
+ */
+function handlePhotoUpload(data) {
+  try {
+    const projectId = String(data.project_id || '').trim();
+    const projectName = String(data.project_name || 'General').trim();
+    const slot = parseInt(data.slot) || 1;
+    const slotTitle = String(data.slot_title || ('Slot ' + slot)).trim();
+    const photoDate = String(data.date || Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd')).trim();
+    const caption = String(data.caption || '').trim();
+    const updatedBy = String(data.updated_by || 'Web App').trim();
+    const base64Str = String(data.image_base64 || '').trim();
+
+    let fileId = '';
+    let directViewUrl = '';
+    let driveDownloadUrl = '';
+
+    if (base64Str) {
+      // 1. ค้นหาหรือสร้างโฟลเดอร์หลัก KPGreenergy_Site_Photos ใน Google Drive
+      let rootFolder;
+      const rootFolders = DriveApp.getFoldersByName('KPGreenergy_Site_Photos');
+      if (rootFolders.hasNext()) {
+        rootFolder = rootFolders.next();
+      } else {
+        rootFolder = DriveApp.createFolder('KPGreenergy_Site_Photos');
+      }
+
+      // 2. ค้นหาหรือสร้างซับโฟลเดอร์ตามชื่อโครงการ
+      const safeProjectFolder = projectName.replace(/[\/\\:*?"<>|]/g, '_');
+      let prjFolder;
+      const prjFolders = rootFolder.getFoldersByName(safeProjectFolder);
+      if (prjFolders.hasNext()) {
+        prjFolder = prjFolders.next();
+      } else {
+        prjFolder = rootFolder.createFolder(safeProjectFolder);
+      }
+
+      // 3. ถอดรหัส base64 และบันทึกเป็นไฟล์ภาพ
+      const cleanBase64 = base64Str.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+      const decodedBytes = Utilities.base64Decode(cleanBase64);
+      const fileName = 'Slot_' + slot + '_' + (photoDate.replace(/-/g, '') || Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyyMMdd')) + '_' + new Date().getTime() + '.jpg';
+      const blob = Utilities.newBlob(decodedBytes, data.content_type || 'image/jpeg', fileName);
+      
+      const file = prjFolder.createFile(blob);
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      fileId = file.getId();
+      // Direct View URL ที่โหลดได้ทันทีบนเว็บและ PDF
+      directViewUrl = 'https://lh3.googleusercontent.com/d/' + fileId;
+      driveDownloadUrl = file.getDownloadUrl();
+    } else if (data.photo_url) {
+      directViewUrl = data.photo_url;
+      fileId = data.drive_file_id || '';
+    }
+
+    // 4. บันทึก Metadata ลงชีต Project_Photos
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let photoSheet = ss.getSheetByName('Project_Photos') || ss.getSheetByName('Photos');
+    if (!photoSheet) {
+      photoSheet = ss.insertSheet('Project_Photos');
+      const headers = ['Project ID', 'Project Name', 'Slot', 'Slot Title', 'File ID', 'View URL', 'Photo Date', 'Caption', 'Updated By', 'Updated At'];
+      photoSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      photoSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#043327').setFontColor('#ffffff');
+      photoSheet.setFrozenRows(1);
+    }
+
+    const nowStr = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+    const lastRow = photoSheet.getLastRow();
+    let targetRow = -1;
+
+    if (lastRow > 1) {
+      const rows = photoSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+      for (let i = 0; i < rows.length; i++) {
+        const rPrjId = String(rows[i][0]).trim();
+        const rPrjName = String(rows[i][1]).trim().toLowerCase();
+        const rSlot = parseInt(rows[i][2]);
+        if ((rPrjId === projectId || (projectName && rPrjName === projectName.toLowerCase())) && rSlot === slot) {
+          targetRow = i + 2;
+          break;
+        }
+      }
+    }
+
+    const rowValues = [
+      projectId,
+      projectName,
+      slot,
+      slotTitle,
+      fileId,
+      directViewUrl,
+      photoDate,
+      caption,
+      updatedBy,
+      nowStr
+    ];
+
+    if (targetRow > 0) {
+      photoSheet.getRange(targetRow, 1, 1, rowValues.length).setValues([rowValues]);
+    } else {
+      photoSheet.appendRow(rowValues);
+    }
+
+    return createJsonResponse({
+      status: 'success',
+      message: 'บันทึกรูปภาพ Slot ' + slot + ' โครงการ ' + projectName + ' บน Google Drive สำเร็จ',
+      file_id: fileId,
+      photo_url: directViewUrl,
+      download_url: driveDownloadUrl,
+      slot: slot,
+      date: photoDate,
+      caption: caption,
+      updated_at: nowStr
+    });
+
+  } catch (err) {
+    return createJsonResponse({ status: 'error', message: err.toString() });
+  }
+}
+
+/**
+ * ดึงรายการรูปภาพของโครงการจากชีต Project_Photos
+ */
+function handleGetPhotos(data) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const photoSheet = ss.getSheetByName('Project_Photos') || ss.getSheetByName('Photos');
+    if (!photoSheet) {
+      return createJsonResponse({ status: 'success', photos: [] });
+    }
+
+    const reqPrjId = String(data.project_id || '').trim();
+    const reqPrjName = String(data.project_name || '').trim().toLowerCase();
+    const lastRow = photoSheet.getLastRow();
+    if (lastRow <= 1) {
+      return createJsonResponse({ status: 'success', photos: [] });
+    }
+
+    const rows = photoSheet.getRange(2, 1, lastRow - 1, 10).getValues();
+    const photos = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const rPrjId = String(rows[i][0]).trim();
+      const rPrjName = String(rows[i][1]).trim().toLowerCase();
+      
+      let matched = false;
+      if (reqPrjId && rPrjId === reqPrjId) matched = true;
+      else if (reqPrjName && (rPrjName === reqPrjName || rPrjName.includes(reqPrjName) || reqPrjName.includes(rPrjName))) matched = true;
+      else if (!reqPrjId && !reqPrjName) matched = true; // ดึงทั้งหมด
+
+      if (matched) {
+        photos.push({
+          project_id: rows[i][0],
+          project_name: rows[i][1],
+          slot: parseInt(rows[i][2]),
+          slot_title: rows[i][3],
+          drive_file_id: rows[i][4],
+          photo_url: rows[i][5],
+          date: rows[i][6] instanceof Date ? Utilities.formatDate(rows[i][6], 'Asia/Bangkok', 'yyyy-MM-dd') : String(rows[i][6] || ''),
+          caption: rows[i][7],
+          updated_by: rows[i][8],
+          updated_at: rows[i][9] instanceof Date ? Utilities.formatDate(rows[i][9], 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss') : String(rows[i][9] || '')
+        });
+      }
+    }
+
+    return createJsonResponse({ status: 'success', photos: photos });
+  } catch (err) {
+    return createJsonResponse({ status: 'error', message: err.toString() });
+  }
+}
+
+/**
+ * ฟังก์ชันทดสอบระบบ Google Drive และสร้างแท็บ Project_Photos
+ * ให้เลือกฟังก์ชันนี้แล้วกดปุ่ม 'เรียกใช้' (Run) 1 ครั้งเพื่ออนุญาตสิทธิ์ Google Drive
+ */
+function testDrivePhotoUpload() {
+  Logger.log('🚀 กำลังทดสอบสร้างโฟลเดอร์ใน Google Drive และแท็บ Project_Photos...');
+  const testData = {
+    action: 'upload_photo',
+    project_id: '1',
+    project_name: 'CEE-2',
+    slot: 1,
+    slot_title: 'ภาพรวมหน้างาน (Overall Site Overview)',
+    date: Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd'),
+    caption: 'ทดสอบการสร้างแท็บ Project_Photos และการเชื่อมต่อ Google Drive',
+    updated_by: 'ผู้ดูแลระบบ',
+    image_base64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+  };
+  const res = handlePhotoUpload(testData);
+  Logger.log('ผลลัพธ์: ' + JSON.stringify(res));
+  Logger.log('✅ ดูใน Google Drive จะมีโฟลเดอร์ KPGreenergy_Site_Photos/CEE-2 และแท็บชีต Project_Photos เพิ่มขึ้นมาแล้วครับ!');
+}
+
 

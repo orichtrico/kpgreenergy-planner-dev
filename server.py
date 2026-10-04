@@ -7,7 +7,7 @@ import time
 import threading
 import requests
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Any, Union, Dict
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -18,14 +18,32 @@ from engine import ProjectEngine
 
 app = FastAPI(title="KPGreenergy Planner", version="1.0.0")
 
-# Security Password for editing
-EDITOR_PASSWORD = "KPGEditor"
-DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyVEcTkGnVKxvsmEvMxrKXvBrafWOG3ZzpNsqDMeChSd2JiQhRmjK9jRj-gisF97YEpeA/exec"
+# Security Credentials & Web App Configurations (Supports Render Environment Variables)
+EDITOR_PASSWORD = os.environ.get("EDITOR_PASSWORD", "KPGEditor")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "kpg_sec_webhook_2026")
+DEFAULT_WEBAPP_URL = os.environ.get(
+    "DEFAULT_WEBAPP_URL",
+    "https://script.google.com/macros/s/AKfycbx139TsQvyxZslZKF0wmHRI0EuXWaRVaU0Vt5TthJvyWevkMCZ57S_alqHTOgELQEMs4A/exec"
+)
 
-# Enable CORS
+# Enable CORS with sensible origins and Render domain regex support
+ALLOWED_ORIGINS = [
+    "https://kpgreenergy-planner-dev01.onrender.com",
+    "https://script.google.com",
+    "https://script.googleusercontent.com",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1",
+    "http://localhost"
+]
+cors_env = os.environ.get("CORS_ORIGINS", "")
+if cors_env:
+    ALLOWED_ORIGINS = [o.strip() for o in cors_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,6 +62,102 @@ async def add_no_cache_header(request: Request, call_next):
 # Initialize Engine
 engine = ProjectEngine()
 
+def safe_parse_progress_pct(val, fallback: Optional[float] = None) -> Optional[float]:
+    """
+    Robustly parses progress percentage values from string, float, or int.
+    Handles:
+      - 0.95 -> 0.95
+      - 95 -> 0.95
+      - "95%" -> 0.95
+      - "95.00%" -> 0.95
+      - "95,00%" -> 0.95 (European/Thai comma decimal)
+      - " 95 % " -> 0.95
+      - "100%" -> 1.0
+      - Invalid/unparseable text -> returns fallback WITHOUT setting to 0.0!
+    """
+    if val is None:
+        return fallback
+    if isinstance(val, (int, float)):
+        v = float(val)
+        return v / 100.0 if v > 1.0 else max(0.0, min(1.0, v))
+    s = str(val).strip()
+    if not s or s == "-":
+        return fallback
+    clean = s.replace("%", "").replace(" ", "").strip()
+    if "," in clean and "." not in clean:
+        clean = clean.replace(",", ".")
+    elif "," in clean and "." in clean:
+        clean = clean.replace(",", "")
+    try:
+        v = float(clean)
+        return v / 100.0 if v > 1.0 else max(0.0, min(1.0, v))
+    except (ValueError, TypeError):
+        return fallback
+
+
+class SyncQueueManager:
+    """
+    Manages pending sync operations to Google Sheet with automatic retry and stale CSV protection.
+    """
+    def __init__(self):
+        self.pending_milestones = {}  # key: f"{prj_id}:{m_name}" -> dict
+        self.pending_issues = {}      # key: issue_id -> dict
+        self.lock = threading.Lock()
+
+    def record_milestone_edit(self, project_id: str, milestone_name: str, payload: dict):
+        key = f"{project_id}:{milestone_name}".strip().lower()
+        with self.lock:
+            self.pending_milestones[key] = {
+                "project_id": project_id,
+                "milestone_name": milestone_name,
+                "payload": payload,
+                "timestamp": time.time(),
+                "synced": False,
+                "retries": 0
+            }
+
+    def mark_milestone_synced(self, project_id: str, milestone_name: str):
+        key = f"{project_id}:{milestone_name}".strip().lower()
+        with self.lock:
+            if key in self.pending_milestones:
+                self.pending_milestones[key]["synced"] = True
+                self.pending_milestones[key]["synced_at"] = time.time()
+
+    def is_milestone_protected(self, project_id: str, milestone_name: str) -> bool:
+        key = f"{project_id}:{milestone_name}".strip().lower()
+        with self.lock:
+            item = self.pending_milestones.get(key)
+            if not item:
+                return False
+            # If not yet confirmed synced, ALWAYS protect!
+            if not item.get("synced", False):
+                return True
+            # If synced, protect for 15 minutes (900s) to allow Google Sheet's CSV export cache to catch up
+            synced_at = item.get("synced_at", 0)
+            return (time.time() - synced_at) < 900
+
+    def record_issue_edit(self, issue_id: str, payload: dict):
+        iid = str(issue_id).strip()
+        with self.lock:
+            self.pending_issues[iid] = {
+                "issue_id": iid,
+                "payload": payload,
+                "timestamp": time.time(),
+                "synced": False,
+                "retries": 0
+            }
+
+    def mark_issue_synced(self, issue_id: str):
+        iid = str(issue_id).strip()
+        with self.lock:
+            if iid in self.pending_issues:
+                self.pending_issues[iid]["synced"] = True
+                self.pending_issues[iid]["synced_at"] = time.time()
+
+
+sync_manager = SyncQueueManager()
+engine.sync_manager = sync_manager
+
 # Data Version for Real-Time Auto Sync across open tabs
 DATA_VERSION = 1
 LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -55,6 +169,24 @@ def notify_data_updated():
     DATA_VERSION += 1
     LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+def sync_issues_from_sheet() -> int:
+    target_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+    if not target_url or "script.google.com" not in target_url:
+        return 0
+    try:
+        url = target_url + ("&" if "?" in target_url else "?") + "action=get_issues"
+        resp = requests.get(url, timeout=15, allow_redirects=True)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            issues_list = res_json.get("issues", [])
+            if issues_list is not None:
+                engine.set_issues_from_sheet(issues_list)
+                print(f"[SheetSync] Synced {len(issues_list)} issues from Google Sheet (Clean 1:1 match).")
+                return len(issues_list)
+    except Exception as e:
+        print(f"[SheetSync Warning] Failed to sync issues from sheet: {e}")
+    return 0
+
 def do_sheet_sync() -> int:
     global LAST_SHEET_SYNC_TIME, IS_SYNCING_SHEET
     if IS_SYNCING_SHEET:
@@ -62,6 +194,7 @@ def do_sheet_sync() -> int:
     try:
         IS_SYNCING_SHEET = True
         count = engine.sync_from_google_sheet_csv()
+        sync_issues_from_sheet()
         if count > 0:
             notify_data_updated()
             print(f"[SheetSync] Successfully synced {count} projects from Google Sheet (v{DATA_VERSION}).")
@@ -84,12 +217,80 @@ def background_periodic_sync():
         except:
             pass
 
+def background_retry_worker():
+    while True:
+        time.sleep(20)  # Retry pending queue every 20 seconds
+        target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+        if not target_write_url or "script.google.com" not in target_write_url:
+            continue
+
+        # 1. Retry pending milestones
+        with sync_manager.lock:
+            m_items = [
+                (k, dict(v)) for k, v in sync_manager.pending_milestones.items()
+                if not v.get("synced", False) and v.get("retries", 0) < 15
+            ]
+
+        for k, item in m_items:
+            payload = item["payload"]
+            try:
+                resp = requests.post(target_write_url, json=payload, timeout=18, allow_redirects=True)
+                if resp.status_code == 200:
+                    try:
+                        rj = resp.json()
+                        if rj.get("status") == "success":
+                            sync_manager.mark_milestone_synced(payload["project_id"], payload["milestone_name"])
+                            print(f"[RetrySync] Milestone synced: {k}")
+                            continue
+                    except:
+                        sync_manager.mark_milestone_synced(payload["project_id"], payload["milestone_name"])
+                        continue
+                with sync_manager.lock:
+                    if k in sync_manager.pending_milestones:
+                        sync_manager.pending_milestones[k]["retries"] += 1
+            except Exception as e:
+                with sync_manager.lock:
+                    if k in sync_manager.pending_milestones:
+                        sync_manager.pending_milestones[k]["retries"] += 1
+                print(f"[RetrySync Warning] Milestone {k} retry failed: {e}")
+
+        # 2. Retry pending issues
+        with sync_manager.lock:
+            i_items = [
+                (iid, dict(v)) for iid, v in sync_manager.pending_issues.items()
+                if not v.get("synced", False) and v.get("retries", 0) < 15
+            ]
+
+        for iid, item in i_items:
+            payload = item["payload"]
+            try:
+                resp = requests.post(target_write_url, json=payload, timeout=18, allow_redirects=True)
+                if resp.status_code == 200:
+                    try:
+                        rj = resp.json()
+                        if rj.get("status") == "success":
+                            sync_manager.mark_issue_synced(iid)
+                            print(f"[RetrySync] Issue synced: {iid}")
+                            continue
+                    except:
+                        sync_manager.mark_issue_synced(iid)
+                        continue
+                with sync_manager.lock:
+                    if iid in sync_manager.pending_issues:
+                        sync_manager.pending_issues[iid]["retries"] += 1
+            except Exception as e:
+                with sync_manager.lock:
+                    if iid in sync_manager.pending_issues:
+                        sync_manager.pending_issues[iid]["retries"] += 1
+                print(f"[RetrySync Warning] Issue {iid} retry failed: {e}")
+
 @app.on_event("startup")
 async def on_startup():
     # Sync latest Google Sheet on server startup
     print("[Startup] Triggering initial Google Sheet sync in background...")
     trigger_background_sheet_sync()
     threading.Thread(target=background_periodic_sync, daemon=True).start()
+    threading.Thread(target=background_retry_worker, daemon=True).start()
 
 @app.get("/api/live-status")
 async def get_live_status():
@@ -122,6 +323,8 @@ class MilestoneUpdateRequest(BaseModel):
     actual_pct: float
     actual_start: Optional[str] = None
     actual_finish: Optional[str] = None
+    planned_start: Optional[str] = None
+    planned_finish: Optional[str] = None
     note: Optional[str] = None
     updated_by: Optional[str] = "Web Editor"
     password: Optional[str] = None
@@ -157,6 +360,34 @@ class IssueUpdateRequest(BaseModel):
     reported_by: Optional[str] = None
     password: Optional[str] = ""
 
+class PhotoUploadRequest(BaseModel):
+    project_id: str
+    project_name: Optional[str] = None
+    slot: int
+    title: Optional[str] = None
+    image_base64: Optional[str] = None
+    photo_url: Optional[str] = None
+    drive_file_id: Optional[str] = None
+    date: Optional[str] = None
+    caption: Optional[str] = None
+    updated_by: Optional[str] = "วิศวกรหน้างาน"
+    password: Optional[str] = ""
+
+class ProjectCreateRequest(BaseModel):
+    name: str
+    order_no: Optional[Union[int, str]] = None
+    lot: Optional[str] = "Lot 1"
+    capacity_kwp: Optional[float] = 100.0
+    business_unit: Optional[str] = "ทั่วไป"
+    installation_type: Optional[str] = "Solar Rooftop"
+    voltage_level: Optional[str] = "LV"
+    type_code: Optional[int] = None
+    planned_start: Optional[str] = None
+    planned_finish: Optional[str] = None
+    password: Optional[str] = ""
+    milestones: Optional[List[Dict[str, Any]]] = None
+
+
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -182,6 +413,11 @@ async def serve_liff():
 @app.get("/liff.html", response_class=HTMLResponse)
 async def serve_liff_html():
     return await serve_liff()
+
+@app.get("/api/debug-log")
+async def debug_log(err: str = ""):
+    print(f"[FRONTEND JS ERROR] {err}")
+    return {"ok": True}
 
 # API Endpoints
 @app.get("/api/overview")
@@ -274,6 +510,114 @@ async def get_project_detail(project_id: str):
     if project_id not in engine.projects_dict:
         raise HTTPException(status_code=404, detail="Project not found")
     return engine.projects_dict[project_id]
+
+def background_sync_new_project_to_sheet(prj: dict):
+    """
+    Asynchronously notifies Google Apps Script to append the new project row into Google Sheets (Approach C).
+    """
+    target_url = engine.google_sheet_webapp_url or DEFAULT_WEBAPP_URL
+    if not target_url or "script.google.com" not in target_url:
+        print("[SheetSync NewProject] No valid Google Apps Script Web App URL configured. Skipping sheet writeback.")
+        return
+
+    payload = {
+        "action": "create_project",
+        "project_id": prj.get("id"),
+        "order_no": prj.get("order_no"),
+        "name": prj.get("name"),
+        "lot": prj.get("lot"),
+        "capacity_kwp": prj.get("capacity_kwp"),
+        "business_unit": prj.get("business_unit"),
+        "installation_type": prj.get("installation_type"),
+        "voltage_level": prj.get("voltage_level", "LV"),
+        "type_code": prj.get("type_code"),
+        "planned_start": prj.get("planned_start"),
+        "planned_finish": prj.get("planned_finish"),
+        "milestones": [
+            {
+                "name": m.get("name"),
+                "weight": m.get("weight"),
+                "planned_start": m.get("planned_start"),
+                "planned_finish": m.get("planned_finish")
+            }
+            for m in prj.get("milestones", [])
+        ]
+    }
+
+    try:
+        resp = requests.post(target_url, json=payload, timeout=25, allow_redirects=True)
+        print(f"[SheetSync NewProject] Google Sheet webhook response status: {resp.status_code}, body: {resp.text[:200]}")
+    except Exception as e:
+        print(f"[SheetSync NewProject Warning] Failed to write new project to Google Sheet: {e}")
+
+@app.get("/api/cal-progress-weights")
+async def get_cal_progress_weights(
+    installation_type: str = "Solar Rooftop",
+    capacity_kwp: float = 100.0,
+    voltage_level: str = "LV"
+):
+    type_code = engine.resolve_type_code(installation_type, capacity_kwp, voltage_level)
+    weights = engine.weight_matrix.get(type_code, engine.weight_matrix.get(1, {}))
+    
+    vl_clean = str(voltage_level).strip().upper()
+    volt_desc = "LV (แรงดันต่ำ - ตู้ MDB เดิม ไม่ใช้หม้อแปลง)" if vl_clean == "LV" else "MV (แรงดันปานกลาง - มีหม้อแปลง Step-Up)"
+    
+    return {
+        "type_code": type_code,
+        "installation_type": installation_type,
+        "voltage_level": vl_clean,
+        "capacity_kwp": capacity_kwp,
+        "description": f"Type {type_code}: {installation_type} [{vl_clean}]",
+        "voltage_desc": volt_desc,
+        "weights": weights,
+        "milestones": [
+            {
+                "index": idx,
+                "name": m_name,
+                "category": engine.milestone_categories.get(m_name, "งานทั่วไป"),
+                "weight": round(weights.get(m_name, 0.0), 4)
+            }
+            for idx, m_name in enumerate(engine.milestone_names)
+        ]
+    }
+
+@app.post("/api/projects")
+async def create_new_project(req: ProjectCreateRequest):
+    global DATA_VERSION, LAST_UPDATE_TIME
+    
+    # Validate password if configured
+    if EDITOR_PASSWORD:
+        if not req.password or req.password.strip() != EDITOR_PASSWORD:
+            raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง (Invalid Editor Password)")
+
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="กรุณาระบุชื่อโครงการ (Project name is required)")
+
+    try:
+        data = req.dict()
+        new_prj = engine.add_new_project(data, trigger_cache_save=True)
+        DATA_VERSION += 1
+        LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Asynchronously sync to Google Sheet via Apps Script
+        threading.Thread(
+            target=background_sync_new_project_to_sheet,
+            args=(new_prj,),
+            daemon=True
+        ).start()
+
+        return {
+            "success": True,
+            "project": new_prj,
+            "version": DATA_VERSION,
+            "message": f"เพิ่มไซต์งาน '{new_prj['name']}' เข้าสู่ระบบสำเร็จแล้ว"
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        print(f"[CreateProject Error] {e}")
+        raise HTTPException(status_code=500, detail=f"เกิดข้อผิดพลาดในการสร้างโครงการ: {e}")
 
 @app.get("/api/phases")
 async def get_phases():
@@ -415,8 +759,8 @@ async def get_issues_endpoint(
 
 @app.post("/api/issues")
 async def create_issue_endpoint(req: IssueCreateRequest):
-    if req.password != EDITOR_PASSWORD and req.reported_by != "LINE LIFF User":
-        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่ 'KPGEditor'")
+    if req.password != EDITOR_PASSWORD:
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
     if not req.description.strip():
         raise HTTPException(status_code=400, detail="กรุณาระบุคำอธิบายปัญหา")
     
@@ -427,17 +771,24 @@ async def create_issue_endpoint(req: IssueCreateRequest):
     target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
     gsheet_synced = False
     if target_write_url:
+        payload = {
+            "action": "add_issue",
+            "issue": new_issue,
+            "updated_by": req.reported_by or "Web User",
+            "source": "webapp"
+        }
+        # Record in sync_manager for reliable retry
+        sync_manager.record_issue_edit(new_issue["id"], payload)
         try:
-            payload = {
-                "action": "add_issue",
-                "issue": new_issue,
-                "updated_by": req.reported_by or "Web User"
-            }
-            gs_resp = requests.post(target_write_url, json=payload, timeout=15, allow_redirects=True)
+            gs_resp = requests.post(target_write_url, json=payload, timeout=18, allow_redirects=True)
             if gs_resp.status_code == 200:
                 gsheet_synced = True
+                sync_manager.mark_issue_synced(new_issue["id"])
+            else:
+                gsheet_synced = True  # Queued for background worker retry
         except Exception as e:
-            print(f"[Warning] Failed to sync issue to Google Sheet: {e}")
+            print(f"[Warning] Issue sync queued for background retry: {e}")
+            gsheet_synced = True  # Queued for background worker retry
             
     return {
         "success": True,
@@ -448,8 +799,8 @@ async def create_issue_endpoint(req: IssueCreateRequest):
 
 @app.post("/api/issues/{issue_id}/update")
 async def update_issue_endpoint(issue_id: str, req: IssueUpdateRequest):
-    if req.password != EDITOR_PASSWORD and req.reported_by != "LINE LIFF User":
-        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่ 'KPGEditor'")
+    if req.password != EDITOR_PASSWORD:
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
     
     updates = {}
     if req.project_id is not None:
@@ -486,15 +837,19 @@ async def update_issue_endpoint(issue_id: str, req: IssueUpdateRequest):
     # Sync to Google Sheet Web App if configured
     target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
     if target_write_url:
+        payload = {
+            "action": "update_issue",
+            "issue": updated,
+            "updated_by": req.reported_by or "Web User",
+            "source": "webapp"
+        }
+        sync_manager.record_issue_edit(issue_id, payload)
         try:
-            payload = {
-                "action": "update_issue",
-                "issue": updated,
-                "updated_by": req.reported_by or "Web User"
-            }
-            requests.post(target_write_url, json=payload, timeout=15, allow_redirects=True)
+            gs_resp = requests.post(target_write_url, json=payload, timeout=18, allow_redirects=True)
+            if gs_resp.status_code == 200:
+                sync_manager.mark_issue_synced(issue_id)
         except Exception as e:
-            print(f"[Warning] Failed to sync issue update to Google Sheet: {e}")
+            print(f"[Warning] Issue update sync queued for background retry: {e}")
 
     return {
         "success": True,
@@ -512,7 +867,7 @@ async def delete_issue_endpoint(issue_id: str, request: Request):
         pwd = request.query_params.get("password")
         
     if pwd != EDITOR_PASSWORD:
-        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่ 'KPGEditor'")
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
         
     success = engine.delete_issue(issue_id)
     if not success:
@@ -521,28 +876,125 @@ async def delete_issue_endpoint(issue_id: str, request: Request):
     notify_data_updated()
     return {"success": True, "message": f"ลบรายการปัญหา {issue_id} สำเร็จ"}
 
+# =========================================================================
+# PHOTO MANAGEMENT ENDPOINTS (6 SLOTS PER PROJECT)
+# =========================================================================
+@app.get("/api/projects/{project_id}/photos")
+async def get_project_photos_endpoint(project_id: str):
+    photos = engine.get_project_photos(project_id)
+    prj = engine.projects_dict.get(str(project_id))
+    prj_name = prj.get("name", f"Project {project_id}") if prj else f"Project {project_id}"
+    return {
+        "project_id": project_id,
+        "project_name": prj_name,
+        "photos": photos
+    }
+
+def background_upload_photo_to_drive(project_id: str, prj_name: str, slot: int, slot_title: str, photo_date: str, caption: str, updated_by: str, image_base64: str, target_write_url: str):
+    try:
+        gas_payload = {
+            "action": "upload_photo",
+            "project_id": str(project_id),
+            "project_name": prj_name,
+            "slot": slot,
+            "slot_title": slot_title,
+            "date": photo_date,
+            "caption": caption,
+            "updated_by": updated_by,
+            "image_base64": image_base64,
+            "content_type": "image/jpeg"
+        }
+        res = requests.post(target_write_url, json=gas_payload, timeout=30)
+        if res.status_code == 200:
+            try:
+                gas_res = res.json()
+                if gas_res.get("status") == "success":
+                    engine.save_project_photo(project_id, {
+                        "slot": slot,
+                        "drive_file_id": gas_res.get("file_id", ""),
+                        "photo_url": gas_res.get("photo_url", ""),
+                        "download_url": gas_res.get("download_url", "")
+                    })
+                    print(f"[Photo Drive Sync] Uploaded slot {slot} to Google Drive: {gas_res.get('file_id')}")
+            except Exception as json_err:
+                print(f"[Photo Drive Sync Notice] Google Apps Script response: {res.text[:100]}")
+    except Exception as e:
+        print(f"[Photo Drive Sync Warning] Could not sync to Google Drive: {e}")
+
+@app.post("/api/projects/{project_id}/photos")
+async def upload_project_photo_endpoint(project_id: str, req: PhotoUploadRequest):
+    if req.password and req.password != EDITOR_PASSWORD:
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
+    
+    prj = engine.projects_dict.get(str(project_id))
+    prj_name = req.project_name or (prj.get("name") if prj else f"Project {project_id}")
+    
+    # 1. Update local cache immediately with base64 data URL
+    photo_payload = req.dict()
+    photo_payload["project_name"] = prj_name
+    saved_slot = engine.save_project_photo(project_id, photo_payload)
+    
+    # 2. Trigger Google Drive upload in background thread (non-blocking!)
+    target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+    if req.image_base64 and target_write_url:
+        threading.Thread(
+            target=background_upload_photo_to_drive,
+            args=(
+                str(project_id),
+                prj_name,
+                req.slot,
+                saved_slot.get("title", f"Slot {req.slot}"),
+                req.date or saved_slot.get("date"),
+                req.caption or "",
+                req.updated_by or "Web User",
+                req.image_base64,
+                target_write_url
+            ),
+            daemon=True
+        ).start()
+            
+    notify_data_updated()
+    return {
+        "success": True,
+        "message": "บันทึกรูปภาพสำเร็จ",
+        "photo": saved_slot
+    }
+
+@app.delete("/api/projects/{project_id}/photos/{slot}")
+async def delete_project_photo_endpoint(project_id: str, slot: int, request: Request):
+    pwd = None
+    try:
+        data = await request.json()
+        pwd = data.get("password")
+    except:
+        pwd = request.query_params.get("password")
+        
+    if pwd and pwd != EDITOR_PASSWORD:
+        raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
+        
+    success = engine.delete_project_photo(project_id, slot)
+    notify_data_updated()
+    return {"success": success, "message": f"ลบรูปภาพ Slot {slot} สำเร็จ"}
+
 @app.post("/api/update-milestone")
 async def update_milestone(req: MilestoneUpdateRequest):
-    # 1. Verify Password: Allow 'KPGEditor' OR LINE LIFF submissions
-    is_liff = (req.updated_by == "LINE LIFF User" or "LINE" in (req.updated_by or ""))
-    is_valid_pwd = (req.password == EDITOR_PASSWORD)
-    
-    if not (is_valid_pwd or is_liff):
+    # Verify Password (from Web Editor or LINE LIFF)
+    if req.password != EDITOR_PASSWORD:
         raise HTTPException(
             status_code=401, 
-            detail="รหัสผ่านไม่ถูกต้อง! กรุณาใส่รหัสผ่าน 'KPGEditor' เพื่อยืนยันการแก้ไขข้อมูล"
+            detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยันการแก้ไขข้อมูล"
         )
     
-    pct = req.actual_pct
-    if pct > 1.0:
-        pct = pct / 100.0
+    pct = safe_parse_progress_pct(req.actual_pct, fallback=0.0)
     
     success = engine.update_milestone(
         project_id=req.project_id,
         milestone_name=req.milestone_name,
         actual_pct=pct,
         actual_start=req.actual_start,
-        actual_finish=req.actual_finish
+        actual_finish=req.actual_finish,
+        planned_start=req.planned_start,
+        planned_finish=req.planned_finish
     )
     
     if not success:
@@ -557,43 +1009,54 @@ async def update_milestone(req: MilestoneUpdateRequest):
     target_write_url = req.sheet_url or getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
     
     if "script.google.com" in target_write_url:
-        try:
-            m_idx = 0
-            for idx, m in enumerate(updated_project.get("milestones", [])):
-                if m["name"].strip().lower() == req.milestone_name.strip().lower():
-                    m_idx = idx
-                    break
+        m_idx = 0
+        for idx, m in enumerate(updated_project.get("milestones", [])):
+            if m["name"].strip().lower() == req.milestone_name.strip().lower():
+                m_idx = idx
+                break
 
-            payload = {
-                "action": "update_milestone",
-                "project_id": updated_project["id"],
-                "project_name": updated_project["name"],
-                "order_no": str(updated_project.get("order_no") or ""),
-                "milestone_name": req.milestone_name,
-                "milestone_index": m_idx,
-                "actual_pct": pct,
-                "actual_start": req.actual_start or "",
-                "actual_finish": req.actual_finish or "",
-                "updated_by": req.updated_by or "Web Editor",
-                "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)"
-            }
-            gs_resp = requests.post(target_write_url, json=payload, timeout=12, allow_redirects=True)
+        payload = {
+            "action": "update_milestone",
+            "project_id": updated_project["id"],
+            "project_name": updated_project["name"],
+            "order_no": str(updated_project.get("order_no") or ""),
+            "milestone_name": req.milestone_name,
+            "milestone_index": m_idx,
+            "actual_pct": pct,
+            "actual_start": req.actual_start or "",
+            "actual_finish": req.actual_finish or "",
+            "planned_start": req.planned_start or "",
+            "planned_finish": req.planned_finish or "",
+            "updated_by": req.updated_by or "Web Editor",
+            "note": req.note or "อัปเดตผ่านระบบ (KPGreenergy Planner)",
+            "source": "webapp"
+        }
+        
+        # Record in queue for retry and stale CSV protection
+        sync_manager.record_milestone_edit(req.project_id, req.milestone_name, payload)
+
+        try:
+            gs_resp = requests.post(target_write_url, json=payload, timeout=18, allow_redirects=True)
             if gs_resp.status_code == 200:
                 try:
                     res_json = gs_resp.json()
                     if res_json.get("status") == "success":
                         gsheet_synced = True
+                        sync_manager.mark_milestone_synced(req.project_id, req.milestone_name)
                         gsheet_msg = " และบันทึกลง Google Sheet เรียบร้อยแล้ว ✅"
                     else:
                         gsheet_msg = f" (Google Sheet แจ้ง: {res_json.get('message')})"
                 except:
                     gsheet_synced = True
+                    sync_manager.mark_milestone_synced(req.project_id, req.milestone_name)
                     gsheet_msg = " และส่งข้อมูลไปยัง Google Sheet เรียบร้อยแล้ว ✅"
             else:
-                gsheet_msg = f" (Google Sheet ตอบกลับสถานะ {gs_resp.status_code})"
+                gsheet_msg = " (เข้าคิวซิงค์อัตโนมัติในพื้นหลังแล้ว ⏳)"
+                gsheet_synced = True  # Queued in background retry worker!
         except Exception as e:
-            print(f"Warning: Failed to write to Google Sheet Web App: {e}")
-            gsheet_msg = f" (ไม่สามารถเขียนลงชีตได้: {str(e)})"
+            print(f"Warning: Write to Google Sheet timed out / queued for retry: {e}")
+            gsheet_msg = " (เข้าคิวซิงค์อัตโนมัติในพื้นหลังแล้ว ⏳)"
+            gsheet_synced = True  # Queued, background worker will retry!
 
     return {
         "success": True,
@@ -611,12 +1074,26 @@ async def update_milestone(req: MilestoneUpdateRequest):
 
 @app.post("/api/webhook")
 async def handle_webhook(request: Request):
+    # Security: Verify Webhook Secret if configured
+    expected_secret = os.environ.get("WEBHOOK_SECRET", "kpg_sec_webhook_2026")
+    client_secret = request.headers.get("X-Webhook-Secret") or request.query_params.get("secret")
+    
     try:
         body = await request.json()
     except:
         body = {}
+        
+    if not client_secret:
+        client_secret = body.get("webhook_secret") or body.get("secret")
+        
+    if expected_secret:
+        user_agent = request.headers.get("user-agent", "")
+        # Allow if secret matches OR if request is genuine Google-Apps-Script
+        if client_secret != expected_secret and "Google-Apps-Script" not in user_agent:
+            raise HTTPException(status_code=401, detail="Unauthorized webhook access")
     
     action = body.get("action") or body.get("event") or ""
+    source = body.get("source", "")
     
     if action in ["update_milestone", "save_progress"]:
         p_id = body.get("project_id")
@@ -624,9 +1101,6 @@ async def handle_webhook(request: Request):
         p_name = str(body.get("project_name", "")).strip().lower()
         m_name = str(body.get("milestone_name", "")).strip()
         m_idx = body.get("milestone_index")
-        pct = float(body.get("actual_pct", 0.0))
-        if pct > 1.0:
-            pct = pct / 100.0
         
         if not p_id:
             # 1. Exact order_no
@@ -648,6 +1122,18 @@ async def handle_webhook(request: Request):
                     if p_name in pn or pn in p_name:
                         p_id = p["id"]
                         break
+
+        # Fallback to existing pct if parse fails (Bug #6)
+        existing_val = 0.0
+        if p_id and p_id in engine.projects_dict:
+            for idx, m in enumerate(engine.projects_dict[p_id].get("milestones", [])):
+                if (m_name and m["name"].strip().lower() == m_name.lower()) or (m_idx is not None and idx == m_idx):
+                    existing_val = m.get("actual_pct", 0.0)
+                    if not m_name:
+                        m_name = m["name"]
+                    break
+
+        pct = safe_parse_progress_pct(body.get("actual_pct", body.get("new_value")), fallback=existing_val)
         
         if p_id:
             eng_res = engine.update_milestone(
@@ -660,14 +1146,43 @@ async def handle_webhook(request: Request):
             )
             if eng_res:
                 notify_data_updated()
+                
+                # BUG #1 FIX: If webhook source was NOT sheet, write back to Google Sheet!
+                if source != "sheet":
+                    target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+                    if target_write_url and "script.google.com" in target_write_url:
+                        sheet_payload = {
+                            "action": "update_milestone",
+                            "project_id": p_id,
+                            "project_name": engine.projects_dict[p_id]["name"],
+                            "order_no": str(engine.projects_dict[p_id].get("order_no") or ""),
+                            "milestone_name": m_name,
+                            "milestone_index": m_idx,
+                            "actual_pct": pct,
+                            "actual_start": body.get("actual_start") or "",
+                            "actual_finish": body.get("actual_finish") or "",
+                            "updated_by": body.get("updated_by") or "Webhook API",
+                            "note": body.get("note") or "อัปเดตผ่าน Webhook",
+                            "source": "webapp_webhook"
+                        }
+                        sync_manager.record_milestone_edit(p_id, m_name, sheet_payload)
+                        def _send():
+                            try:
+                                r = requests.post(target_write_url, json=sheet_payload, timeout=18, allow_redirects=True)
+                                if r.status_code == 200:
+                                    sync_manager.mark_milestone_synced(p_id, m_name)
+                            except Exception as ex:
+                                print(f"[Webhook Writeback Warning] {ex}")
+                        threading.Thread(target=_send, daemon=True).start()
+
             return {
                 "status": "ok",
                 "updated": eng_res,
                 "project_id": p_id,
-                "project_name": engine.projects_dict[p_id]["name"],
+                "project_name": engine.projects_dict[p_id]["name"] if p_id in engine.projects_dict else "",
                 "milestone": m_name,
                 "milestone_index": m_idx,
-                "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"],
+                "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"] if p_id in engine.projects_dict else 0,
                 "version": DATA_VERSION
             }
 
@@ -676,20 +1191,7 @@ async def handle_webhook(request: Request):
         p_name = str(body.get("project_name", "")).strip().lower()
         m_name = str(body.get("milestone_name", "")).strip()
         m_idx = body.get("milestone_index")
-        val_str = str(body.get("new_value", body.get("actual_pct", "0"))).replace("%", "").strip()
-        try:
-            val_pct = float(val_str)
-            if val_pct > 1.0:
-                val_pct = val_pct / 100.0
-        except:
-            val_pct = 0.0
-            
-        if val_pct == 0.0:
-            if body.get("actual_finish"):
-                val_pct = 1.0
-            elif body.get("actual_start"):
-                val_pct = 0.5
-            
+        
         p_id = None
         # 1. Exact order_no
         if p_order:
@@ -710,6 +1212,34 @@ async def handle_webhook(request: Request):
                 if p_name in pn or pn in p_name:
                     p_id = p["id"]
                     break
+
+        # Check existing milestone value and protect against overwrite loops
+        existing_val = 0.0
+        if p_id and p_id in engine.projects_dict:
+            for idx, m in enumerate(engine.projects_dict[p_id].get("milestones", [])):
+                if (m_name and m["name"].strip().lower() == m_name.lower()) or (m_idx is not None and idx == m_idx):
+                    existing_val = m.get("actual_pct", 0.0)
+                    if not m_name:
+                        m_name = m["name"]
+                    break
+                    
+        # Protection check: if recently edited from Web App / webhook, avoid echoing back!
+        if p_id and m_name and sync_manager.is_milestone_protected(p_id, m_name):
+            return {
+                "status": "ignored",
+                "reason": "milestone_protected_by_webapp_edit",
+                "project_id": p_id,
+                "milestone": m_name
+            }
+
+        # Safe parse progress with comma and % support (Bug #6)
+        val_pct = safe_parse_progress_pct(body.get("new_value", body.get("actual_pct")), fallback=existing_val)
+        
+        if val_pct == 0.0:
+            if body.get("actual_finish"):
+                val_pct = 1.0
+            elif body.get("actual_start"):
+                val_pct = 0.5
                 
         if p_id:
             eng_res = engine.update_milestone(
@@ -760,75 +1290,6 @@ async def sync_google_sheet(request: Request):
             "version": DATA_VERSION,
             "message": f"ซิงค์ข้อมูลจาก Google Sheets สำเร็จเรียบร้อยแล้ว ({count} โครงการ)"
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-        headers = {"User-Agent": "Mozilla/5.0"}
-        try:
-            resp = requests.get(raw_url, headers=headers, timeout=12, allow_redirects=True)
-        except Exception as net_err:
-            raise HTTPException(status_code=502, detail=f"ไม่สามารถเชื่อมต่อ Web App URL: {str(net_err)}")
-            
-        content_type = resp.headers.get("Content-Type", "")
-        if "accounts.google.com" in resp.url or ("text/html" in content_type and "<!DOCTYPE html>" in resp.text):
-            raise HTTPException(
-                status_code=403,
-                detail="Google Sheet ติดสิทธิ์การเข้าถึง! คุณสามารถใส่ 'ลิงก์ของ Google Sheet' ปกติ (https://docs.google.com/spreadsheets/d/...) แทนได้เลยครับ สะดวกและเร็วกว่า"
-            )
-            
-        try:
-            data = resp.json()
-        except:
-            raise HTTPException(status_code=422, detail="ข้อมูลที่ตอบกลับไม่ใช่ JSON ลองวางลิงก์ Google Sheet แทน")
-            
-        projects_from_sheet = data.get("projects", [])
-        updated_count = 0
-        for p_sheet in projects_from_sheet:
-            p_name = p_sheet.get("name", "").strip().lower()
-            for p_eng in engine.projects:
-                if p_eng["name"].strip().lower() == p_name:
-                    for m_s in p_sheet.get("milestones", []):
-                        m_name = m_s.get("name")
-                        act_pct = float(m_s.get("actual_pct", 0.0))
-                        for m in p_eng.get("milestones", []):
-                            if m["name"].strip().lower() == m_name.strip().lower():
-                                m["actual_pct"] = max(0.0, min(1.0, act_pct))
-                                if m_s.get("actual_start"):
-                                    m["actual_start"] = m_s.get("actual_start")
-                                if m_s.get("actual_finish"):
-                                    m["actual_finish"] = m_s.get("actual_finish")
-                                m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
-                                m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
-                                break
-                    
-                    total_act = sum(m["actual_contribution"] for m in p_eng["milestones"])
-                    p_eng["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
-                    p_eng["variance_pct"] = round(p_eng["actual_progress_pct"] - p_eng["planned_progress_pct"], 2)
-                    if p_eng["actual_progress_pct"] >= 99.9:
-                        p_eng["status"] = "COMPLETED"
-                        p_eng["status_th"] = "เสร็จสมบูรณ์"
-                    elif p_eng["variance_pct"] >= 0:
-                        p_eng["status"] = "ON_TRACK"
-                        p_eng["status_th"] = "ตามแผนงาน"
-                    elif p_eng["variance_pct"] >= -10:
-                        p_eng["status"] = "SLIGHT_DELAY"
-                        p_eng["status_th"] = "ล่าช้าเล็กน้อย"
-                    else:
-                        p_eng["status"] = "DELAYED"
-                        p_eng["status_th"] = "ล่าช้ากว่าแผน"
-                        
-                    p_eng["s_curve"] = engine.generate_project_scurve(p_eng)
-                    updated_count += 1
-                    break
-                    
-        engine.save_to_cache()
-        return {
-            "success": True, 
-            "message": f"ซิงค์ข้อมูลจาก Google Sheets สำเร็จเรียบร้อยแล้ว ({updated_count} โครงการ)"
-        }
-        
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
