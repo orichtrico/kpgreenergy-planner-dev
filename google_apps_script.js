@@ -870,4 +870,79 @@ function testDrivePhotoUpload() {
   Logger.log('✅ ดูใน Google Drive จะมีโฟลเดอร์ KPGreenergy_Site_Photos/CEE-2 และแท็บชีต Project_Photos เพิ่มขึ้นมาแล้วครับ!');
 }
 
+/**
+ * =========================================================================
+ * ⏰ ระบบป้องกันเว็บ Render หลับอัตโนมัติ (Keep Render Awake 24/7 ฟรี)
+ * =========================================================================
+ * วิธีเปิดใช้งานง่ายที่สุด (คลิกเดียวจบ):
+ * 1. เลือกฟังก์ชัน "setupKeepRenderAwakeTrigger" จากเมนูด้านบนใน Apps Script แล้วกด "เรียกใช้" (Run) 1 ครั้ง
+ *    (หรือกดจากเมนู "⚡ KPGreenergy Sync" บนแถบเมนูของ Google Sheet ก็ได้)
+ * 2. ระบบจะสร้างทริกเกอร์เวลาให้ยิงปลุกเว็บทุกๆ 10 นาทีโดยอัตโนมัติ ทำให้ Render ไม่เข้าโหมด Sleep อีกเลย!
+ */
+function keepRenderAwake() {
+  if (!WEBHOOK_DASHBOARD_URL || WEBHOOK_DASHBOARD_URL.includes('your-dashboard')) return;
+  const pingUrl = WEBHOOK_DASHBOARD_URL.replace(/\/api\/webhook\/?$/, '/api/live-status') + '?keepalive=' + new Date().getTime();
+  try {
+    const res = UrlFetchApp.fetch(pingUrl, {
+      method: 'get',
+      muteHttpExceptions: true
+    });
+    Logger.log('⏰ [KeepRenderAwake] Pinged ' + pingUrl + ' -> HTTP ' + res.getResponseCode());
+  } catch (err) {
+    Logger.log('⚠️ [KeepRenderAwake] Ping error: ' + err);
+  }
+}
 
+/**
+ * กด Run ฟังก์ชันนี้เพียง 1 ครั้ง ระบบจะตั้งเวลาปลุกเว็บ Render ทุกๆ 10 นาทีให้อัตโนมัติ
+ */
+function setupKeepRenderAwakeTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'keepRenderAwake') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('keepRenderAwake')
+    .timeBased()
+    .everyMinutes(10)
+    .create();
+  keepRenderAwake();
+  Logger.log('✅ ตั้งเวลาปลุกเว็บ Render ทุกๆ 10 นาทีเรียบร้อยแล้ว! เว็บจะไม่เข้าโหมด Sleep อีกต่อไป');
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('ตั้งเวลาปลุกเว็บ Render ทุก 10 นาทีเรียบร้อยแล้ว!', '✅ Keep-Alive ทำงานแล้ว', 6);
+  } catch (e) {}
+}
+
+/**
+ * ใช้สำหรับยกเลิกทริกเกอร์ปลุกเว็บ (หากต้องการหยุดใช้งานชั่วคราว)
+ */
+function stopKeepRenderAwakeTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'keepRenderAwake') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
+  Logger.log('🛑 ยกเลิกทริกเกอร์ KeepRenderAwake จำนวน ' + removed + ' รายการเรียบร้อยแล้ว');
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('ยกเลิกการปลุกเว็บอัตโนมัติเรียบร้อยแล้ว', '🛑 ปิดโหมด Keep-Alive', 5);
+  } catch (e) {}
+}
+
+/**
+ * สร้างเมนูทางลัดบนแถบเมนูของ Google Sheet อัตโนมัติเมื่อเปิดไฟล์
+ */
+function onOpen() {
+  try {
+    SpreadsheetApp.getUi()
+      .createMenu('⚡ KPGreenergy Sync')
+      .addItem('⏰ เปิดระบบป้องกันเว็บ Render หลับ (ทุก 10 นาที)', 'setupKeepRenderAwakeTrigger')
+      .addItem('⚡ ทดสอบปลุกเว็บ Render ทันที (Ping Now)', 'keepRenderAwake')
+      .addSeparator()
+      .addItem('🛑 ปิดระบบป้องกันเว็บ Render หลับ', 'stopKeepRenderAwakeTrigger')
+      .addToUi();
+  } catch (e) {}
+}

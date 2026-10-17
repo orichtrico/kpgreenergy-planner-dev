@@ -428,6 +428,7 @@ async def get_overview():
     
     completed_count = sum(1 for p in projects if p.get("status") == "COMPLETED")
     delayed_count = sum(1 for p in projects if p.get("status") == "DELAYED")
+    slight_delay_count = sum(1 for p in projects if p.get("status") == "SLIGHT_DELAY")
     on_track_count = sum(1 for p in projects if p.get("status") in ["ON_TRACK", "SLIGHT_DELAY"])
     
     total_act_weighted = sum(p.get("actual_progress_pct", 0.0) * p.get("capacity_kwp", 0.0) for p in projects)
@@ -452,6 +453,7 @@ async def get_overview():
         "variance_pct": round(avg_actual - avg_planned, 2),
         "completed_count": completed_count,
         "delayed_count": delayed_count,
+        "slight_delay_count": slight_delay_count,
         "on_track_count": on_track_count,
         "business_units": business_units,
         "lots": lots,
@@ -923,7 +925,7 @@ def background_upload_photo_to_drive(project_id: str, prj_name: str, slot: int, 
 
 @app.post("/api/projects/{project_id}/photos")
 async def upload_project_photo_endpoint(project_id: str, req: PhotoUploadRequest):
-    if req.password and req.password != EDITOR_PASSWORD:
+    if req.password != EDITOR_PASSWORD:
         raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
     
     prj = engine.projects_dict.get(str(project_id))
@@ -969,7 +971,7 @@ async def delete_project_photo_endpoint(project_id: str, slot: int, request: Req
     except:
         pwd = request.query_params.get("password")
         
-    if pwd and pwd != EDITOR_PASSWORD:
+    if pwd != EDITOR_PASSWORD:
         raise HTTPException(status_code=401, detail="รหัสผ่านไม่ถูกต้อง กรุณาระบุรหัสผ่านที่ถูกต้องเพื่อยืนยัน")
         
     success = engine.delete_project_photo(project_id, slot)

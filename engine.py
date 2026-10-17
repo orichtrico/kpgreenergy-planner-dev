@@ -554,6 +554,7 @@ class ProjectEngine:
                     "projects": [],
                     "completed_count": 0,
                     "delayed_count": 0,
+                    "slight_delay_count": 0,
                     "on_track_count": 0
                 }
             
@@ -580,6 +581,9 @@ class ProjectEngine:
                 p["completed_count"] += 1
             elif prj["status"] == "DELAYED":
                 p["delayed_count"] += 1
+            elif prj["status"] == "SLIGHT_DELAY":
+                p["slight_delay_count"] += 1
+                p["on_track_count"] += 1
             else:
                 p["on_track_count"] += 1
 
@@ -733,7 +737,7 @@ class ProjectEngine:
 
         planned_start = p_s_date.strftime('%Y-%m-%d')
         planned_finish = p_f_date.strftime('%Y-%m-%d')
-        total_duration = max(14, (p_f_date - p_s_date).days)
+        total_duration = max(1, (p_f_date - p_s_date).days)
 
         # Build 33 milestones matching type_code weights
         weights = self.weight_matrix.get(type_code, self.weight_matrix.get(1, {}))
@@ -763,8 +767,8 @@ class ProjectEngine:
             # Default staggered dates
             offset_pct = (i / max(1, num_m - 1)) * 0.75
             dur_pct = 0.25
-            m_s = p_s_date + timedelta(days=int(total_duration * offset_pct))
-            m_f = min(p_f_date, m_s + timedelta(days=max(5, int(total_duration * dur_pct))))
+            m_s = min(p_f_date, p_s_date + timedelta(days=int(total_duration * offset_pct)))
+            m_f = min(p_f_date, m_s + timedelta(days=max(1, int(total_duration * dur_pct))))
             if i == num_m - 1:
                 m_f = p_f_date
 
@@ -1052,7 +1056,7 @@ class ProjectEngine:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 text = resp.read().decode('utf-8')
         except Exception as e:
             print(f"[Engine] Failed to download Google Sheet CSV: {e}")

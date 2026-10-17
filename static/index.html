@@ -73,32 +73,33 @@
       <div class="flex items-center justify-between h-16">
         
         <!-- Logo & Title -->
-        <div class="flex items-center space-x-3">
-          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-400 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-950/40 text-slate-950">
-            <i data-lucide="sun-medium" class="w-6 h-6"></i>
+        <div class="flex items-center space-x-2.5 sm:space-x-3 min-w-0">
+          <div class="w-9 h-9 sm:w-10 sm:h-10 shrink-0 rounded-xl bg-gradient-to-tr from-amber-400 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-950/40 text-slate-950">
+            <i data-lucide="sun-medium" class="w-5 h-5 sm:w-6 sm:h-6"></i>
           </div>
-          <div>
+          <div class="min-w-0">
             <div class="flex items-center space-x-2">
-              <span class="font-bold text-lg tracking-wide text-white">KPGreenergy Planner</span>
-              <span class="px-2 py-0.5 text-xs font-semibold bg-emerald-400/20 text-emerald-300 rounded-full border border-emerald-400/30 flex items-center gap-1">
+              <span class="font-bold text-lg tracking-wide text-white truncate">KPGreenergy Planner</span>
+              <span class="hidden sm:flex px-2 py-0.5 text-xs font-semibold bg-emerald-400/20 text-emerald-300 rounded-full border border-emerald-400/30 items-center gap-1 shrink-0">
                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Real-time
               </span>
             </div>
-            <p class="text-xs text-emerald-200/80">ระบบติดตามแผนงานก่อสร้าง & S-Curve โครงการพลังงานแสงอาทิตย์</p>
+            <p class="hidden sm:block text-xs text-emerald-200/80 truncate">ระบบติดตามแผนงานก่อสร้าง & S-Curve โครงการพลังงานแสงอาทิตย์</p>
           </div>
         </div>
 
         <!-- Header Actions -->
-        <div class="flex items-center space-x-2 sm:space-x-3">
-          <button onclick="openAddProjectModal()" class="inline-flex items-center space-x-1.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-bold px-3 py-1.5 rounded-xl text-xs sm:text-sm transition shadow-md shadow-emerald-950/40 border border-amber-300/60">
-            <i data-lucide="plus-circle" class="w-4 h-4 text-slate-950"></i>
-            <span>เพิ่มไซต์งานใหม่</span>
+        <div class="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
+          <button onclick="openAddProjectModal()" class="inline-flex items-center space-x-1.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-bold px-2.5 sm:px-3 py-1.5 rounded-xl text-xs sm:text-sm transition shadow-md shadow-emerald-950/40 border border-amber-300/60 whitespace-nowrap">
+            <i data-lucide="plus-circle" class="w-4 h-4 text-slate-950 shrink-0"></i>
+            <span class="hidden sm:inline">เพิ่มไซต์งานใหม่</span>
+            <span class="sm:hidden">เพิ่มไซต์</span>
           </button>
-          <a href="/liff" target="_blank" class="hidden sm:inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded-lg text-sm font-medium transition shadow-sm border border-emerald-400/30">
+          <a href="/liff" target="_blank" class="hidden sm:inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded-lg text-sm font-medium transition shadow-sm border border-emerald-400/30 whitespace-nowrap">
             <i data-lucide="smartphone" class="w-4 h-4"></i>
             <span>เปิดฟอร์ม LINE (LIFF)</span>
           </a>
-          <button onclick="refreshData()" class="p-2 text-emerald-200 hover:text-white hover:bg-[#064e3b] rounded-lg transition" title="รีเฟรชข้อมูล">
+          <button onclick="refreshData()" class="p-2 text-emerald-200 hover:text-white hover:bg-[#064e3b] rounded-lg transition shrink-0" title="รีเฟรชข้อมูล">
             <i data-lucide="rotate-cw" class="w-5 h-5" id="refresh-icon"></i>
           </button>
         </div>
@@ -1114,7 +1115,7 @@
         <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <div>
             <label class="block text-xs text-slate-500 mb-1">เลือกโครงการ</label>
-            <select id="sim-project-select" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500"></select>
+            <select id="sim-project-select" onchange="onSimulatorProjectChange()" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500"></select>
           </div>
           <div>
             <label class="block text-xs text-slate-500 mb-1">เลือก Milestone</label>
@@ -1255,7 +1256,7 @@
 
         <div>
           <label class="block font-semibold text-slate-700 mb-1">ความก้าวหน้า (% Progress): <span id="modal-pct-display" class="text-emerald-700 font-bold">100%</span></label>
-          <input type="range" id="modal-pct-slider" min="0" max="100" value="100" oninput="document.getElementById('modal-pct-display').innerText = this.value + '%'" class="w-full accent-emerald-600">
+          <input type="range" id="modal-pct-slider" min="0" max="100" value="100" oninput="setModalPct(parseInt(this.value, 10))" class="w-full accent-emerald-600">
           <div class="flex justify-between text-slate-400 mt-1">
             <button type="button" onclick="setModalPct(0)" class="hover:text-slate-800">0%</button>
             <button type="button" onclick="setModalPct(25)" class="hover:text-slate-800">25%</button>
@@ -1669,6 +1670,6 @@
     <span id="toast-msg">บันทึกสำเร็จ</span>
   </div>
 
-  <script src="/static/app.js?v=20260922_v1.7.2"></script>
+  <script src="/static/app.js?v=20261017_v1.8.0"></script>
 </body>
 </html>

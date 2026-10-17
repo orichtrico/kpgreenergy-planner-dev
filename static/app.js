@@ -107,6 +107,7 @@ async function loadInitialData() {
     // Select first project by default
     if (allProjects.length > 0 && !currentProject) {
       await selectProject(allProjects[0].id);
+      populateSimulatorDropdowns();
     }
     
     // Fetch initial data version
@@ -196,12 +197,16 @@ function populateCctvDropdown() {
 
 function updateProjectDropdown(projectsList) {
   const prjSel = document.getElementById('select-project');
+  if (!prjSel) return;
   prjSel.innerHTML = '';
-  projectsList.forEach(p => {
+  (projectsList || []).forEach(p => {
     prjSel.innerHTML += `<option value="${p.id}">[${p.lot}] ${p.name} (${p.capacity_kwp} kWp)</option>`;
   });
-  if (currentProject) {
+  const exists = currentProject && (projectsList || []).some(p => String(p.id) === String(currentProject.id));
+  if (exists) {
     prjSel.value = currentProject.id;
+  } else if (projectsList && projectsList.length > 0) {
+    prjSel.value = projectsList[0].id;
   }
 }
 
@@ -442,6 +447,8 @@ async function selectProject(projectId) {
     const res = await fetch(`/api/projects/${projectId}?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error("Project not found");
     currentProject = await res.json();
+    const prjSel = document.getElementById('select-project');
+    if (prjSel) prjSel.value = projectId;
     renderProjectDetail();
   } catch (err) {
     console.error("Error fetching project:", err);
@@ -468,6 +475,9 @@ function renderProjectDetail() {
   } else if (p.status === 'DELAYED') {
     pill.className = 'inline-block mt-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800';
     pill.innerText = `ล่าช้า ${p.variance_pct}%`;
+  } else if (p.status === 'SLIGHT_DELAY') {
+    pill.className = 'inline-block mt-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800';
+    pill.innerText = `ล่าช้าเล็กน้อย (${p.variance_pct}%)`;
   } else {
     pill.className = 'inline-block mt-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800';
     pill.innerText = 'ตามแผนงาน';
@@ -2426,13 +2436,17 @@ function openQuickUpdateModal(milestoneName = null, pctVal = 100, actStart = '',
     mSel.value = milestoneName;
   }
   
+  const curM = (currentProject.milestones || []).find(x => x.name === (milestoneName || mSel.value)) || (currentProject.milestones && currentProject.milestones[0]);
+  const initPct = milestoneName !== null ? pctVal : (curM ? Math.round((curM.actual_pct || 0) * 100) : pctVal);
+  const initActStart = milestoneName !== null ? actStart : (curM ? (curM.actual_start || '') : '');
+  const initActFinish = milestoneName !== null ? actFinish : (curM ? (curM.actual_finish || '') : '');
+
   // Set initial slider & dates
-  setModalPct(pctVal);
-  document.getElementById('modal-start-date').value = actStart || '';
-  document.getElementById('modal-finish-date').value = (pctVal >= 100 && actFinish) ? actFinish : '';
+  setModalPct(initPct);
+  document.getElementById('modal-start-date').value = initActStart || '';
+  document.getElementById('modal-finish-date').value = (initPct >= 100 && initActFinish) ? initActFinish : '';
   
   // Set initial planned start & finish dates
-  const curM = (currentProject.milestones || []).find(x => x.name === (milestoneName || mSel.value));
   const planStartEl = document.getElementById('modal-plan-start-date');
   const planFinishEl = document.getElementById('modal-plan-finish-date');
   if (planStartEl) planStartEl.value = planStart || (curM ? curM.planned_start : '') || '';
@@ -2544,18 +2558,38 @@ async function handleModalSubmit(e) {
 function populateSimulatorDropdowns() {
   const simPrj = document.getElementById('sim-project-select');
   const simM = document.getElementById('sim-milestone-select');
+  if (!simPrj || !simM) return;
   
   simPrj.innerHTML = '';
-  allProjects.forEach(p => {
+  (allProjects || []).forEach(p => {
     simPrj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
   });
   
   simM.innerHTML = '';
-  if (currentProject && currentProject.milestones) {
-    currentProject.milestones.forEach(m => {
-      simM.innerHTML += `<option value="${m.name}">${m.name}</option>`;
-    });
-  }
+  const msList = (currentProject && currentProject.milestones && currentProject.milestones.length > 0)
+    ? currentProject.milestones.map(m => m.name)
+    : (typeof DEFAULT_MILESTONE_NAMES !== 'undefined' ? DEFAULT_MILESTONE_NAMES : []);
+  msList.forEach(mName => {
+    simM.innerHTML += `<option value="${mName}">${mName}</option>`;
+  });
+}
+
+async function onSimulatorProjectChange() {
+  const simPrj = document.getElementById('sim-project-select');
+  const simM = document.getElementById('sim-milestone-select');
+  if (!simPrj || !simM) return;
+  const prjId = simPrj.value;
+  if (!prjId) return;
+  try {
+    const res = await fetch(`/api/projects/${prjId}?t=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const prjData = await res.json();
+      simM.innerHTML = '';
+      (prjData.milestones || []).forEach(m => {
+        simM.innerHTML += `<option value="${m.name}">${m.name}</option>`;
+      });
+    }
+  } catch (e) {}
 }
 
 async function submitSimulatorUpdate() {
@@ -2579,8 +2613,14 @@ async function submitSimulatorUpdate() {
     
     const data = await res.json();
     resBox.classList.remove('hidden');
-    resBox.innerText = `>>> Webhook Response (HTTP 200 OK):\n` + JSON.stringify(data, null, 2);
-    showToast('ส่ง Webhook จำลองเรียบร้อย Dashboard อัปเดตแล้ว!');
+    if (!res.ok || data.error || data.ok === false) {
+      const statusLabel = `HTTP ${res.status || 400}${res.statusText ? ' ' + res.statusText : ' Error'}`;
+      resBox.innerText = `>>> Webhook Response (${statusLabel}):\n` + JSON.stringify(data, null, 2);
+      showToast(data.detail || data.error || 'เกิดข้อผิดพลาดในการส่ง Webhook', 'error');
+      return;
+    }
+    resBox.innerText = `>>> Webhook Response (HTTP ${res.status || 200} OK):\n` + JSON.stringify(data, null, 2);
+    showToast('ส่ง Webhook จำลองเรียบร้อย Dashboard อัปเดตแล้ว!', 'success');
     
     await loadInitialData();
     if (currentProject && currentProject.id === prjId) {
@@ -2589,6 +2629,7 @@ async function submitSimulatorUpdate() {
   } catch (err) {
     resBox.classList.remove('hidden');
     resBox.innerText = `Error: ` + err.message;
+    showToast('เกิดข้อผิดพลาดในการส่ง Webhook: ' + err.message, 'error');
   }
 }
 
@@ -2717,10 +2758,13 @@ let isPollingSync = false;
 async function checkLiveStatus() {
   if (isPollingSync) return;
   
-  // Don't interrupt user if they have the edit milestone modal open
-  const editModal = document.getElementById('edit-milestone-modal');
-  if (editModal && !editModal.classList.contains('hidden')) {
-    return;
+  // Don't interrupt user if they have any edit/create modal open
+  const openModalIds = ['update-modal', 'add-project-modal', 'add-issue-modal', 'cctv-modal', 'edit-milestone-modal'];
+  for (const mId of openModalIds) {
+    const el = document.getElementById(mId);
+    if (el && !el.classList.contains('hidden')) {
+      return;
+    }
   }
 
   try {
@@ -3317,7 +3361,54 @@ function populatePhotoProjectDropdown() {
   }
 }
 
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function getPendingSlotImage(slotNum, projectId = currentPhotoProjectId) {
+  if (!pendingSlotImages) return null;
+  if (projectId && pendingSlotImages[projectId] && typeof pendingSlotImages[projectId] === 'object') {
+    if (pendingSlotImages[projectId][slotNum]) return pendingSlotImages[projectId][slotNum];
+  }
+  const entry = pendingSlotImages[slotNum];
+  if (entry && typeof entry === 'object' && entry.projectId !== undefined) {
+    return String(entry.projectId) === String(projectId) ? entry.dataUrl : null;
+  }
+  return null;
+}
+
+function setPendingSlotImage(slotNum, dataUrl, projectId = currentPhotoProjectId) {
+  if (!pendingSlotImages || typeof pendingSlotImages !== 'object') {
+    pendingSlotImages = {};
+  }
+  const pid = String(projectId || '');
+  if (pid) {
+    if (!pendingSlotImages[pid] || typeof pendingSlotImages[pid] !== 'object') {
+      pendingSlotImages[pid] = {};
+    }
+    pendingSlotImages[pid][slotNum] = dataUrl;
+    pendingSlotImages[slotNum] = { projectId: pid, dataUrl };
+  }
+}
+
+function clearPendingSlotImage(slotNum, projectId = currentPhotoProjectId) {
+  if (!pendingSlotImages) return;
+  const pid = String(projectId || '');
+  if (pid && pendingSlotImages[pid]) {
+    delete pendingSlotImages[pid][slotNum];
+  }
+  delete pendingSlotImages[slotNum];
+}
+
 function onPhotoLotFilterChange() {
+  pendingSlotImages = {};
+  document.querySelectorAll('input[type="file"][id^="photo-input-"]').forEach(i => { i.value = ''; });
   populatePhotoProjectDropdown();
   const prjSelect = document.getElementById('photo-project-select');
   if (prjSelect && prjSelect.value) {
@@ -3330,10 +3421,8 @@ function onPhotoProjectChange() {
   const prjSelect = document.getElementById('photo-project-select');
   if (prjSelect && prjSelect.value) {
     currentPhotoProjectId = prjSelect.value;
-    if (typeof selectProject === 'function') {
-      const p = (allProjects || []).find(x => String(x.id) === String(currentPhotoProjectId));
-      if (p) currentProject = p;
-    }
+    pendingSlotImages = {};
+    document.querySelectorAll('input[type="file"][id^="photo-input-"]').forEach(i => { i.value = ''; });
     loadProjectPhotos(currentPhotoProjectId);
   }
 }
@@ -3381,7 +3470,7 @@ async function loadProjectPhotos(projectId) {
     currentProjectPhotos = [];
   }
 
-  const uploadedCount = (currentProjectPhotos || []).filter(p => p.photo_url || p.drive_file_id || pendingSlotImages[p.slot]).length;
+  const uploadedCount = (currentProjectPhotos || []).filter(p => p.photo_url || p.drive_file_id || getPendingSlotImage(p.slot, projectId)).length;
   if (headerCount) headerCount.innerText = `${uploadedCount} / 6 รูป`;
 
   renderPhotoCards(currentProjectPhotos, prj);
@@ -3392,16 +3481,19 @@ function renderPhotoCards(photos, prj) {
   if (!gridEl) return;
 
   const todayStr = new Date().toISOString().split('T')[0];
+  const activePrjId = (prj && prj.id) || currentPhotoProjectId;
 
   const html = DEFAULT_PHOTO_CATEGORIES.map(cat => {
     const slotNum = cat.slot;
     const photo = (photos || []).find(p => p.slot === slotNum) || {};
-    const hasPhoto = Boolean(photo.photo_url || photo.drive_file_id || pendingSlotImages[slotNum]);
-    const photoUrl = pendingSlotImages[slotNum] || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
-    const photoDate = photo.date || todayStr;
-    const photoCaption = photo.caption || '';
-    const updatedBy = photo.updated_by || 'วิศวกรหน้างาน';
-    const updatedAt = photo.updated_at ? photo.updated_at.split(' ')[0] : '';
+    const draftImg = getPendingSlotImage(slotNum, activePrjId);
+    const hasPhoto = Boolean(photo.photo_url || photo.drive_file_id || draftImg);
+    const photoUrl = draftImg || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${encodeURIComponent(photo.drive_file_id)}` : '');
+    const safePhotoUrl = escapeHtml(photoUrl);
+    const photoDate = escapeHtml(photo.date || todayStr);
+    const photoCaption = escapeHtml(photo.caption || '');
+    const updatedBy = escapeHtml(photo.updated_by || 'วิศวกรหน้างาน');
+    const updatedAt = escapeHtml(photo.updated_at ? photo.updated_at.split(' ')[0] : '');
 
     return `
       <div class="bg-white rounded-2xl border ${hasPhoto ? 'border-emerald-200 shadow-sm' : 'border-slate-200'} p-5 flex flex-col justify-between space-y-4 hover:shadow-md transition">
@@ -3421,14 +3513,14 @@ function renderPhotoCards(photos, prj) {
               <span class="text-[11px] text-slate-400">ยังไม่มีรูป</span>
             `}
           </div>
-          <h4 class="font-bold text-slate-900 text-sm leading-tight">${cat.title}</h4>
-          <p class="text-[11px] text-slate-500 mt-0.5">${cat.desc}</p>
+          <h4 class="font-bold text-slate-900 text-sm leading-tight">${escapeHtml(cat.title)}</h4>
+          <p class="text-[11px] text-slate-500 mt-0.5">${escapeHtml(cat.desc)}</p>
         </div>
 
         <!-- Photo Image Preview Container -->
         <div id="photo-preview-container-${slotNum}" class="relative w-full h-48 bg-slate-100 rounded-xl overflow-hidden border border-slate-200 flex items-center justify-center group">
-          ${hasPhoto && photoUrl ? `
-            <img id="photo-img-tag-${slotNum}" src="${photoUrl}" alt="${cat.title}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
+          ${hasPhoto && safePhotoUrl ? `
+            <img id="photo-img-tag-${slotNum}" src="${safePhotoUrl}" alt="${escapeHtml(cat.title)}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
             
             <!-- Hover Action Overlay -->
             <div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
@@ -3436,7 +3528,7 @@ function renderPhotoCards(photos, prj) {
                 <i data-lucide="maximize-2" class="w-4 h-4"></i>
               </button>
               ${photo.drive_file_id ? `
-                <a href="https://drive.google.com/file/d/${photo.drive_file_id}/view" target="_blank" class="p-2 bg-emerald-600/90 hover:bg-emerald-600 text-white rounded-lg shadow text-xs font-medium flex items-center gap-1" title="เปิดใน Google Drive">
+                <a href="https://drive.google.com/file/d/${encodeURIComponent(photo.drive_file_id)}/view" target="_blank" class="p-2 bg-emerald-600/90 hover:bg-emerald-600 text-white rounded-lg shadow text-xs font-medium flex items-center gap-1" title="เปิดใน Google Drive">
                   <i data-lucide="external-link" class="w-4 h-4"></i>
                 </a>
               ` : ''}
@@ -3534,17 +3626,22 @@ function compressImageClientSide(file, maxWidth = 1600, maxHeight = 1600, qualit
 async function handlePhotoSlotFileSelected(slotNum, inputEl) {
   if (!inputEl.files || inputEl.files.length === 0) return;
   const file = inputEl.files[0];
+  const targetProjectId = currentPhotoProjectId || (currentProject && currentProject.id);
   
   showToast(`กำลังประมวลผลและย่อขนาดภาพ Slot ${slotNum}...`, 'info');
   try {
     const compressedBase64 = await compressImageClientSide(file);
-    pendingSlotImages[slotNum] = compressedBase64;
+    if (String(currentPhotoProjectId || (currentProject && currentProject.id)) !== String(targetProjectId)) {
+      inputEl.value = '';
+      return;
+    }
+    setPendingSlotImage(slotNum, compressedBase64, targetProjectId);
     
     // Instant DOM preview update so image displays IMMEDIATELY
     const previewContainer = document.getElementById(`photo-preview-container-${slotNum}`);
     if (previewContainer) {
       previewContainer.innerHTML = `
-        <img id="photo-img-tag-${slotNum}" src="${compressedBase64}" alt="Slot ${slotNum}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
+        <img id="photo-img-tag-${slotNum}" src="${escapeHtml(compressedBase64)}" alt="Slot ${slotNum}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
         <div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
           <button onclick="openPhotoLightbox(${slotNum})" class="p-2 bg-white/90 hover:bg-white text-slate-900 rounded-lg shadow text-xs font-medium flex items-center gap-1" title="ดูรูปขนาดใหญ่">
             <i data-lucide="maximize-2" class="w-4 h-4"></i>
@@ -3581,6 +3678,7 @@ async function savePhotoSlotData(slotNum) {
     }
   }
 
+  const targetProjectId = String(currentPhotoProjectId);
   const btn = document.getElementById(`btn-save-photo-${slotNum}`);
   const originalHtml = btn ? btn.innerHTML : '';
   if (btn) {
@@ -3590,20 +3688,20 @@ async function savePhotoSlotData(slotNum) {
 
   const dateVal = document.getElementById(`photo-date-${slotNum}`) ? document.getElementById(`photo-date-${slotNum}`).value : '';
   const captionVal = document.getElementById(`photo-caption-${slotNum}`) ? document.getElementById(`photo-caption-${slotNum}`).value : '';
-  const imageBase64 = pendingSlotImages[slotNum] || null;
+  const imageBase64 = getPendingSlotImage(slotNum, targetProjectId);
 
-  const prj = (allProjects || []).find(p => String(p.id) === String(currentPhotoProjectId)) || currentProject;
+  const prj = (allProjects || []).find(p => String(p.id) === targetProjectId) || currentProject;
   const cat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum);
 
   const payload = {
-    project_id: String(currentPhotoProjectId),
-    project_name: prj ? prj.name : `Project ${currentPhotoProjectId}`,
+    project_id: targetProjectId,
+    project_name: prj ? prj.name : `Project ${targetProjectId}`,
     slot: slotNum,
     title: cat ? cat.title : `Slot ${slotNum}`,
     date: dateVal || new Date().toISOString().split('T')[0],
     caption: captionVal || '',
     updated_by: 'วิศวกรโครงการ',
-    password: ''
+    password: (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('kpg_auth_pwd')) || 'KPGEditor'
   };
 
   if (imageBase64) {
@@ -3611,7 +3709,7 @@ async function savePhotoSlotData(slotNum) {
   }
 
   try {
-    const res = await fetch(`/api/projects/${currentPhotoProjectId}/photos`, {
+    const res = await fetch(`/api/projects/${targetProjectId}/photos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -3619,9 +3717,9 @@ async function savePhotoSlotData(slotNum) {
 
     const resData = await res.json();
     if (res.ok && resData.success) {
-      delete pendingSlotImages[slotNum];
+      clearPendingSlotImage(slotNum, targetProjectId);
       showToast(`บันทึกภาพถ่าย Slot ${slotNum} เรียบร้อยแล้ว!`, 'success');
-      await loadProjectPhotos(currentPhotoProjectId);
+      await loadProjectPhotos(targetProjectId);
     } else {
       alert('บันทึกไม่สำเร็จ: ' + (resData.detail || resData.message || 'เกิดข้อผิดพลาด'));
     }
@@ -3638,15 +3736,19 @@ async function savePhotoSlotData(slotNum) {
 async function deletePhotoSlot(slotNum) {
   if (!confirm(`คุณต้องการลบภาพถ่ายใน Slot ${slotNum} ใช่หรือไม่?`)) return;
 
-  delete pendingSlotImages[slotNum];
+  const targetProjectId = String(currentPhotoProjectId || '');
+  clearPendingSlotImage(slotNum, targetProjectId);
   try {
-    const res = await fetch(`/api/projects/${currentPhotoProjectId}/photos/${slotNum}`, {
-      method: 'DELETE'
+    const pwd = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('kpg_auth_pwd')) || 'KPGEditor';
+    const res = await fetch(`/api/projects/${targetProjectId}/photos/${slotNum}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
     });
     const resData = await res.json();
     if (res.ok && resData.success) {
       showToast(`ลบภาพ Slot ${slotNum} เรียบร้อยแล้ว`, 'success');
-      await loadProjectPhotos(currentPhotoProjectId);
+      await loadProjectPhotos(targetProjectId);
     } else {
       alert('ลบไม่สำเร็จ: ' + (resData.detail || 'เกิดข้อผิดพลาด'));
     }
@@ -3661,7 +3763,8 @@ function openPhotoLightbox(slotNum) {
 
   const photo = (currentProjectPhotos || []).find(p => p.slot === slotNum) || {};
   const cat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum) || { title: `Slot ${slotNum}` };
-  const photoUrl = pendingSlotImages[slotNum] || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
+  const draftImg = getPendingSlotImage(slotNum, currentPhotoProjectId);
+  const photoUrl = draftImg || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
   const photoDate = photo.date || (document.getElementById(`photo-date-${slotNum}`) ? document.getElementById(`photo-date-${slotNum}`).value : '');
   const photoCaption = photo.caption || (document.getElementById(`photo-caption-${slotNum}`) ? document.getElementById(`photo-caption-${slotNum}`).value : '');
   const driveId = photo.drive_file_id || '';
@@ -4032,7 +4135,7 @@ function updateAddPrjMilestoneDates() {
   const fDate = new Date(finishEl.value);
   if (isNaN(sDate.getTime()) || isNaN(fDate.getTime())) return;
 
-  const totalDays = Math.max(14, Math.round((fDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24)));
+  const totalDays = Math.max(0, Math.round((fDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24)));
   const startInputs = document.querySelectorAll('.add-prj-ms-start');
   const finishInputs = document.querySelectorAll('.add-prj-ms-finish');
   const numM = finishInputs.length || 33;
@@ -4040,15 +4143,16 @@ function updateAddPrjMilestoneDates() {
   for (let i = 0; i < numM; i++) {
     const offsetPct = (i / Math.max(1, numM - 1)) * 0.75;
     const durPct = 0.25;
-    const mStartDays = Math.round(totalDays * offsetPct);
-    const mDurDays = Math.max(5, Math.round(totalDays * durPct));
-    let mFinishDays = mStartDays + mDurDays;
+    const mStartDays = Math.min(totalDays, Math.round(totalDays * offsetPct));
+    const mDurDays = Math.max(1, Math.round(totalDays * durPct));
+    let mFinishDays = Math.min(totalDays, mStartDays + mDurDays);
     if (i === numM - 1 || mFinishDays > totalDays) {
       mFinishDays = totalDays;
     }
 
-    const mStartDate = new Date(sDate.getTime() + mStartDays * 24 * 60 * 60 * 1000);
-    const mFinishDate = new Date(sDate.getTime() + mFinishDays * 24 * 60 * 60 * 1000);
+    const maxTime = Math.max(sDate.getTime(), fDate.getTime());
+    const mStartDate = new Date(Math.min(maxTime, sDate.getTime() + mStartDays * 24 * 60 * 60 * 1000));
+    const mFinishDate = new Date(Math.min(maxTime, sDate.getTime() + mFinishDays * 24 * 60 * 60 * 1000));
 
     const sYYYY = mStartDate.getFullYear();
     const sMM = String(mStartDate.getMonth() + 1).padStart(2, '0');
