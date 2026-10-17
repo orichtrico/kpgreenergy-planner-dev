@@ -913,6 +913,7 @@ def background_upload_photo_to_drive(project_id: str, prj_name: str, slot: int, 
                 if gas_res.get("status") == "success":
                     engine.save_project_photo(project_id, {
                         "slot": slot,
+                        "title": slot_title,
                         "drive_file_id": gas_res.get("file_id", ""),
                         "photo_url": gas_res.get("photo_url", ""),
                         "download_url": gas_res.get("download_url", "")
@@ -938,7 +939,7 @@ async def upload_project_photo_endpoint(project_id: str, req: PhotoUploadRequest
     
     # 2. Trigger Google Drive upload in background thread (non-blocking!)
     target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
-    if req.image_base64 and target_write_url:
+    if (req.image_base64 or saved_slot.get("photo_url") or saved_slot.get("drive_file_id")) and target_write_url:
         threading.Thread(
             target=background_upload_photo_to_drive,
             args=(
@@ -949,7 +950,7 @@ async def upload_project_photo_endpoint(project_id: str, req: PhotoUploadRequest
                 req.date or saved_slot.get("date"),
                 req.caption or "",
                 req.updated_by or "Web User",
-                req.image_base64,
+                req.image_base64 or "",
                 target_write_url
             ),
             daemon=True

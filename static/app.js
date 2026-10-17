@@ -184,6 +184,9 @@ function populateFilters() {
   });
   
   updateProjectDropdown(allProjects);
+  if (typeof populatePhotoLotDropdown === 'function') {
+    populatePhotoLotDropdown();
+  }
 }
 
 function populateCctvDropdown() {
@@ -1936,13 +1939,15 @@ async function generateProjectPDF() {
               const imgUrl = photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
               const pDate = photo.date || '-';
               const caption = photo.caption || 'ดำเนินงานตามแผนงาน';
+              const uiTitle = (typeof getSelectedPhotoSlotTitle === 'function' && String(currentPhotoProjectId) === String(p.id)) ? getSelectedPhotoSlotTitle(cat.slot) : '';
+              const slotTitle = escapeHtml(photo.title || photo.slot_title || uiTitle || cat.title);
 
               return `
                 <div style="border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background: #fafafa; display: flex; flex-direction: column; height: 78mm;">
                   
                   <!-- Slot Header -->
                   <div style="background: #043327; color: #ffffff; padding: 3px 6px; font-size: 7.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;">
-                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 65mm;">${cat.title}</span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 65mm;">${slotTitle}</span>
                     <span style="color: #fef08a; font-size: 7px;">${pDate}</span>
                   </div>
 
@@ -3316,37 +3321,38 @@ async function renderPhotosTab() {
   }
 }
 
+function populatePhotoLotDropdown() {
+  const lotFilterEl = document.getElementById('photo-lot-filter');
+  if (!lotFilterEl) return;
+  const curVal = lotFilterEl.value || 'ALL';
+  const lotsFromOverview = (globalOverview && Array.isArray(globalOverview.lots)) ? globalOverview.lots : [];
+  const lotsFromProjects = [...new Set((allProjects || []).map(p => p.lot).filter(Boolean))].sort();
+  const allLots = lotsFromOverview.length > 0 ? lotsFromOverview : lotsFromProjects;
+
+  let lotOptionsHtml = '<option value="ALL">-- ทุกล็อต / เฟส --</option>';
+  allLots.forEach(l => {
+    lotOptionsHtml += `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`;
+  });
+  lotFilterEl.innerHTML = lotOptionsHtml;
+  lotFilterEl.value = allLots.includes(curVal) ? curVal : 'ALL';
+}
+
 function populatePhotoProjectDropdown() {
+  populatePhotoLotDropdown();
   const lotFilterEl = document.getElementById('photo-lot-filter');
   const lotFilter = lotFilterEl ? lotFilterEl.value : 'ALL';
   const prjSelect = document.getElementById('photo-project-select');
   if (!prjSelect || !allProjects || allProjects.length === 0) return;
 
-  // Populate lot filter dynamically from global lots
-  if (lotFilterEl && globalOverview && Array.isArray(globalOverview.lots) && globalOverview.lots.length > 0) {
-    const curVal = lotFilterEl.value || 'ALL';
-    let lotOptionsHtml = '<option value="ALL">ทุก Lot</option>';
-    globalOverview.lots.forEach(l => {
-      lotOptionsHtml += `<option value="${l}">${l}</option>`;
-    });
-    if (lotFilterEl.options.length <= 1) {
-      lotFilterEl.innerHTML = lotOptionsHtml;
-      lotFilterEl.value = curVal;
-    }
-  }
-
   const currentVal = currentPhotoProjectId || (currentProject ? currentProject.id : allProjects[0].id);
   let filtered = allProjects;
   if (lotFilter && lotFilter !== 'ALL') {
-    filtered = filtered.filter(p => (p.lot || '').toUpperCase() === lotFilter.toUpperCase());
-  }
-  if (filtered.length === 0) {
-    filtered = allProjects;
+    filtered = allProjects.filter(p => String(p.lot || '').trim() === String(lotFilter).trim());
   }
 
   prjSelect.innerHTML = filtered.map(p => {
     const isSel = String(p.id) === String(currentVal) ? 'selected' : '';
-    return `<option value="${p.id}" ${isSel}>${p.name} (${p.lot || '-'})</option>`;
+    return `<option value="${p.id}" ${isSel}>[${escapeHtml(p.lot || '-')}] ${escapeHtml(p.name)} (${p.capacity_kwp || 0} kWp)</option>`;
   }).join('');
 
   if (filtered.length > 0) {
@@ -3358,6 +3364,9 @@ function populatePhotoProjectDropdown() {
       currentPhotoProjectId = filtered[0].id;
       prjSelect.value = filtered[0].id;
     }
+  } else {
+    currentPhotoProjectId = null;
+    prjSelect.value = '';
   }
 }
 
@@ -3369,6 +3378,53 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+function getPhotoTitleChoices(prj) {
+  const mainTitles = DEFAULT_PHOTO_CATEGORIES.map(c => c.title);
+  const extraTitles = [
+    'สำรวจพื้นที่ / ภาพมุมสูงโดรน (Site & Drone Survey)',
+    'การขนส่งวัสดุและอุปกรณ์เข้าหน้างาน (Material Delivery)',
+    'งานทำความสะอาดแผงและส่งมอบงาน (Cleaning & Handover)'
+  ];
+  const milestoneTitles = (prj && Array.isArray(prj.milestones) && prj.milestones.length > 0)
+    ? prj.milestones.map(m => m.name)
+    : (typeof DEFAULT_MILESTONE_NAMES !== 'undefined' ? DEFAULT_MILESTONE_NAMES : []);
+  return { mainTitles, extraTitles, milestoneTitles };
+}
+
+function onPhotoTitleSelectChange(slotNum) {
+  const selEl = document.getElementById(`photo-title-select-${slotNum}`);
+  const customEl = document.getElementById(`photo-title-custom-${slotNum}`);
+  const descEl = document.getElementById(`photo-title-desc-${slotNum}`);
+  if (!selEl) return;
+
+  if (selEl.value === '__custom__') {
+    if (customEl) {
+      customEl.classList.remove('hidden');
+      customEl.focus();
+    }
+    if (descEl) descEl.innerText = 'กำหนดชื่อหัวข้อรูปภาพด้วยตนเอง';
+  } else {
+    if (customEl) customEl.classList.add('hidden');
+    const matchedCat = DEFAULT_PHOTO_CATEGORIES.find(c => c.title === selEl.value);
+    if (descEl) {
+      descEl.innerText = matchedCat ? matchedCat.desc : 'หัวข้อขั้นตอนการดำเนินงานของโครงการ';
+    }
+  }
+}
+
+function getSelectedPhotoSlotTitle(slotNum) {
+  const defCat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum);
+  const defTitle = defCat ? defCat.title : `Slot ${slotNum}`;
+  const selEl = document.getElementById(`photo-title-select-${slotNum}`);
+  const customEl = document.getElementById(`photo-title-custom-${slotNum}`);
+  if (!selEl) return defTitle;
+  if (selEl.value === '__custom__') {
+    const customText = customEl ? customEl.value.trim() : '';
+    return customText || defTitle;
+  }
+  return selEl.value || defTitle;
 }
 
 function getPendingSlotImage(slotNum, projectId = currentPhotoProjectId) {
@@ -3482,6 +3538,8 @@ function renderPhotoCards(photos, prj) {
 
   const todayStr = new Date().toISOString().split('T')[0];
   const activePrjId = (prj && prj.id) || currentPhotoProjectId;
+  const { mainTitles, extraTitles, milestoneTitles } = getPhotoTitleChoices(prj);
+  const allPresetTitles = [...mainTitles, ...extraTitles, ...milestoneTitles];
 
   const html = DEFAULT_PHOTO_CATEGORIES.map(cat => {
     const slotNum = cat.slot;
@@ -3495,14 +3553,22 @@ function renderPhotoCards(photos, prj) {
     const updatedBy = escapeHtml(photo.updated_by || 'วิศวกรหน้างาน');
     const updatedAt = escapeHtml(photo.updated_at ? photo.updated_at.split(' ')[0] : '');
 
+    const activeTitle = (photo.title || photo.slot_title || cat.title).trim();
+    const isCustomTitle = !allPresetTitles.includes(activeTitle);
+    const matchedCatDesc = (DEFAULT_PHOTO_CATEGORIES.find(c => c.title === activeTitle) || {}).desc || (isCustomTitle ? 'กำหนดชื่อหัวข้อรูปภาพด้วยตนเอง' : 'หัวข้อขั้นตอนการดำเนินงานของโครงการ');
+
+    const mainOptsHtml = mainTitles.map(t => `<option value="${escapeHtml(t)}" ${(!isCustomTitle && activeTitle === t) ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('');
+    const extraOptsHtml = extraTitles.map(t => `<option value="${escapeHtml(t)}" ${(!isCustomTitle && activeTitle === t) ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('');
+    const msOptsHtml = milestoneTitles.map((t, idx) => `<option value="${escapeHtml(t)}" ${(!isCustomTitle && activeTitle === t) ? 'selected' : ''}>${idx + 1}. ${escapeHtml(t)}</option>`).join('');
+
     return `
       <div class="bg-white rounded-2xl border ${hasPhoto ? 'border-emerald-200 shadow-sm' : 'border-slate-200'} p-5 flex flex-col justify-between space-y-4 hover:shadow-md transition">
         
         <!-- Card Header -->
         <div>
-          <div class="flex items-center justify-between gap-2 mb-1.5">
+          <div class="flex items-center justify-between gap-2 mb-2">
             <span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${hasPhoto ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}">
-              Slot ${slotNum}
+              รูปที่ ${slotNum} (Slot ${slotNum})
             </span>
             ${hasPhoto ? `
               <span class="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
@@ -3513,14 +3579,29 @@ function renderPhotoCards(photos, prj) {
               <span class="text-[11px] text-slate-400">ยังไม่มีรูป</span>
             `}
           </div>
-          <h4 class="font-bold text-slate-900 text-sm leading-tight">${escapeHtml(cat.title)}</h4>
-          <p class="text-[11px] text-slate-500 mt-0.5">${escapeHtml(cat.desc)}</p>
+          <label class="block text-[10px] font-semibold text-slate-500 mb-1">เลือกชื่อรูปภาพ / หัวข้อรายงาน:</label>
+          <select id="photo-title-select-${slotNum}" onchange="onPhotoTitleSelectChange(${slotNum})" class="w-full bg-slate-50 hover:bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 transition">
+            <optgroup label="📌 หมวดภาพถ่ายหลัก (6 จุดมาตรฐาน)">
+              ${mainOptsHtml}
+            </optgroup>
+            <optgroup label="📋 หมวดงานสำรวจ / ขนส่ง / ส่งมอบ">
+              ${extraOptsHtml}
+            </optgroup>
+            <optgroup label="🔧 ขั้นตอนงานตามแผน (Milestones 33 รายการ)">
+              ${msOptsHtml}
+            </optgroup>
+            <optgroup label="✏️ กำหนดชื่อเอง">
+              <option value="__custom__" ${isCustomTitle ? 'selected' : ''}>✏️ พิมพ์ระบุชื่อรูปภาพเอง...</option>
+            </optgroup>
+          </select>
+          <input type="text" id="photo-title-custom-${slotNum}" value="${isCustomTitle ? escapeHtml(activeTitle) : ''}" placeholder="พิมพ์ชื่อรูปภาพที่ต้องการ..." class="${isCustomTitle ? '' : 'hidden '}mt-1.5 w-full bg-white border border-emerald-400 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500" />
+          <p id="photo-title-desc-${slotNum}" class="text-[11px] text-slate-500 mt-1">${escapeHtml(matchedCatDesc)}</p>
         </div>
 
         <!-- Photo Image Preview Container -->
         <div id="photo-preview-container-${slotNum}" class="relative w-full h-48 bg-slate-100 rounded-xl overflow-hidden border border-slate-200 flex items-center justify-center group">
           ${hasPhoto && safePhotoUrl ? `
-            <img id="photo-img-tag-${slotNum}" src="${safePhotoUrl}" alt="${escapeHtml(cat.title)}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
+            <img id="photo-img-tag-${slotNum}" src="${safePhotoUrl}" alt="${escapeHtml(activeTitle)}" class="w-full h-full object-cover cursor-pointer transition duration-300 group-hover:scale-105" onclick="openPhotoLightbox(${slotNum})" />
             
             <!-- Hover Action Overlay -->
             <div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
@@ -3692,12 +3773,13 @@ async function savePhotoSlotData(slotNum) {
 
   const prj = (allProjects || []).find(p => String(p.id) === targetProjectId) || currentProject;
   const cat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum);
+  const selectedTitle = getSelectedPhotoSlotTitle(slotNum);
 
   const payload = {
     project_id: targetProjectId,
     project_name: prj ? prj.name : `Project ${targetProjectId}`,
     slot: slotNum,
-    title: cat ? cat.title : `Slot ${slotNum}`,
+    title: selectedTitle || (cat ? cat.title : `Slot ${slotNum}`),
     date: dateVal || new Date().toISOString().split('T')[0],
     caption: captionVal || '',
     updated_by: 'วิศวกรโครงการ',
@@ -3718,7 +3800,7 @@ async function savePhotoSlotData(slotNum) {
     const resData = await res.json();
     if (res.ok && resData.success) {
       clearPendingSlotImage(slotNum, targetProjectId);
-      showToast(`บันทึกภาพถ่าย Slot ${slotNum} เรียบร้อยแล้ว!`, 'success');
+      showToast(`บันทึกข้อมูลรูปที่ ${slotNum} (${payload.title}) เรียบร้อยแล้ว!`, 'success');
       await loadProjectPhotos(targetProjectId);
     } else {
       alert('บันทึกไม่สำเร็จ: ' + (resData.detail || resData.message || 'เกิดข้อผิดพลาด'));
@@ -3763,6 +3845,7 @@ function openPhotoLightbox(slotNum) {
 
   const photo = (currentProjectPhotos || []).find(p => p.slot === slotNum) || {};
   const cat = DEFAULT_PHOTO_CATEGORIES.find(c => c.slot === slotNum) || { title: `Slot ${slotNum}` };
+  const activeTitle = getSelectedPhotoSlotTitle(slotNum) || photo.title || photo.slot_title || cat.title;
   const draftImg = getPendingSlotImage(slotNum, currentPhotoProjectId);
   const photoUrl = draftImg || photo.photo_url || (photo.drive_file_id ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}` : '');
   const photoDate = photo.date || (document.getElementById(`photo-date-${slotNum}`) ? document.getElementById(`photo-date-${slotNum}`).value : '');
@@ -3776,7 +3859,7 @@ function openPhotoLightbox(slotNum) {
   const driveLinkEl = document.getElementById('lightbox-drive-link');
 
   if (imgEl) imgEl.src = photoUrl;
-  if (titleEl) titleEl.innerText = cat.title;
+  if (titleEl) titleEl.innerText = activeTitle;
   if (dateEl) dateEl.innerText = photoDate ? `วันที่ถ่ายภาพ: ${photoDate}` : '';
   if (captionEl) captionEl.innerText = photoCaption ? `คำบรรยาย: ${photoCaption}` : 'ไม่มีคำบรรยายเพิ่มเติม';
 
@@ -3800,8 +3883,11 @@ function closePhotoLightbox() {
 
 // Expose Photo functions to window
 window.renderPhotosTab = renderPhotosTab;
+window.populatePhotoLotDropdown = populatePhotoLotDropdown;
 window.populatePhotoProjectDropdown = populatePhotoProjectDropdown;
 window.onPhotoLotFilterChange = onPhotoLotFilterChange;
+window.onPhotoTitleSelectChange = onPhotoTitleSelectChange;
+window.getSelectedPhotoSlotTitle = getSelectedPhotoSlotTitle;
 window.onPhotoProjectChange = onPhotoProjectChange;
 window.reloadCurrentProjectPhotos = reloadCurrentProjectPhotos;
 window.loadProjectPhotos = loadProjectPhotos;

@@ -130,8 +130,8 @@
           <span>CCTV Real time</span>
         </button>
         <button onclick="switchTab('photos')" id="tab-btn-photos" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="camera" class="w-4 h-4 text-amber-300"></i>
-          <span>📸 ภาพถ่ายโครงการ (Site Photos)</span>
+          <i data-lucide="file-text" class="w-4 h-4 text-amber-300"></i>
+          <span>รายงานโครงการ</span>
         </button>
         <button onclick="switchTab('integration')" id="tab-btn-integration" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
           <i data-lucide="settings" class="w-4 h-4"></i>
@@ -1147,36 +1147,32 @@
         
         <div class="flex items-center gap-3">
           <div class="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-            <i data-lucide="camera" class="w-6 h-6"></i>
+            <i data-lucide="file-text" class="w-6 h-6"></i>
           </div>
           <div>
             <div class="flex items-center gap-2">
-              <h2 class="text-base font-bold text-slate-900">ภาพถ่ายความคืบหน้าโครงการ (Site Progress Photos)</h2>
+              <h2 class="text-base font-bold text-slate-900">รายงานโครงการ & ภาพถ่ายความคืบหน้า (Project Report)</h2>
               <span class="px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800 rounded-full border border-emerald-200">
                 Google Drive Storage
               </span>
             </div>
-            <p class="text-xs text-slate-500">บันทึกรูปภาพ 6 จุดสำคัญของแต่ละโครงการ จัดเก็บถาวรบน Google Drive และพร้อม Export เข้า PDF</p>
+            <p class="text-xs text-slate-500">เลือก Lot และไซต์งานเพื่อจัดการหัวข้อรูปภาพทั้ง 6 จุด จัดเก็บถาวรบน Google Drive และพร้อม Export รายงาน PDF</p>
           </div>
         </div>
 
         <div class="flex flex-wrap items-center gap-3">
           <!-- Lot Filter -->
           <div class="flex items-center gap-2">
-            <span class="text-xs text-slate-500 font-medium">Lot:</span>
+            <span class="text-xs text-slate-500 font-medium">เลือก Lot:</span>
             <select id="photo-lot-filter" onchange="onPhotoLotFilterChange()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-emerald-500">
-              <option value="ALL">ทุก Lot</option>
-              <option value="Lot 1">Lot 1</option>
-              <option value="Lot 2">Lot 2</option>
-              <option value="Lot 3">Lot 3</option>
-              <option value="Lot 4">Lot 4</option>
+              <option value="ALL">-- ทุกล็อต / เฟส --</option>
             </select>
           </div>
 
           <!-- Project Select -->
           <div class="flex items-center gap-2">
-            <span class="text-xs text-slate-500 font-medium">โครงการ:</span>
-            <select id="photo-project-select" onchange="onPhotoProjectChange()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-[#043327] focus:ring-2 focus:ring-emerald-500 max-w-[240px]">
+            <span class="text-xs text-slate-500 font-medium">เลือกไซต์งาน:</span>
+            <select id="photo-project-select" onchange="onPhotoProjectChange()" class="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-[#043327] focus:ring-2 focus:ring-emerald-500 max-w-[280px]">
             </select>
           </div>
 
@@ -1670,6 +1666,6 @@
     <span id="toast-msg">บันทึกสำเร็จ</span>
   </div>
 
-  <script src="/static/app.js?v=20261017_v1.8.0"></script>
+  <script src="/static/app.js?v=20261017_v1.8.1"></script>
 </body>
 </html>
