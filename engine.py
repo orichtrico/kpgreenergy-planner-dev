@@ -51,6 +51,7 @@ def parse_date(d_str):
 def safe_parse_progress_pct(val, fallback: float = 0.0) -> float:
     """
     Safely parse percentage in all possible formats without wiping to 0.0%.
+    Properly handles strings with '%' such as '1.00%' -> 0.01 and '0.60%' -> 0.006.
     """
     if val is None:
         return fallback
@@ -60,6 +61,7 @@ def safe_parse_progress_pct(val, fallback: float = 0.0) -> float:
     s = str(val).strip()
     if not s or s == "-":
         return fallback
+    has_pct = "%" in s
     clean = s.replace("%", "").replace(" ", "").strip()
     if "," in clean and "." not in clean:
         clean = clean.replace(",", ".")
@@ -67,7 +69,9 @@ def safe_parse_progress_pct(val, fallback: float = 0.0) -> float:
         clean = clean.replace(",", "")
     try:
         v = float(clean)
-        return v / 100.0 if v > 1.0 else max(0.0, min(1.0, v))
+        if has_pct or v > 1.0:
+            return max(0.0, min(1.0, v / 100.0))
+        return max(0.0, min(1.0, v))
     except (ValueError, TypeError):
         return fallback
 
@@ -283,12 +287,12 @@ class ProjectEngine:
         self.projects_dict = {}
         self.google_sheet_webapp_url = ''
         
-        for r in range(6, ws_plan.max_row + 1):
+        for r in range(5, ws_plan.max_row + 1):
             p_name = ws_plan.cell(row=r, column=3).value
             if not p_name:
                 continue
             p_name_str = str(p_name).strip()
-            if not p_name_str or p_name_str == "None":
+            if not p_name_str or p_name_str in ("None", "รายชื่อ"):
                 continue
             
             bu = ws_plan.cell(row=r, column=1).value or "ทั่วไป"
@@ -308,7 +312,7 @@ class ProjectEngine:
             except:
                 type_code = 1
 
-            project_id = f"prj_{r-5:03d}"
+            project_id = f"prj_{r-4:03d}"
             milestones = []
             total_planned_weight = 0.0
             total_actual_progress = 0.0
@@ -324,14 +328,7 @@ class ProjectEngine:
                 p_finish = ws_plan.cell(row=r, column=m_info["finish_col"]).value
                 p_w = ws_plan.cell(row=r, column=m_info["weight_col"]).value
                 
-                try:
-                    p_weight = float(p_w) if p_w is not None and str(p_w).strip() not in ("", "-") else 0.0
-                except:
-                    p_weight = self.weight_matrix.get(type_code, {}).get(m_name, 0.0)
-                
-                if p_weight == 0.0 and m_name in self.weight_matrix.get(type_code, {}):
-                    p_weight = self.weight_matrix[type_code][m_name]
-                    
+                p_weight = safe_parse_progress_pct(p_w, fallback=0.0) if p_w is not None and str(p_w).strip() not in ("", "-") else 0.0
                 total_planned_weight += p_weight
                 
                 p_start_str = format_date(p_start)
@@ -855,16 +852,18 @@ class ProjectEngine:
 
     def recalculate_project_metrics(self, prj: dict):
         """
-        Recalculates progress %, status, variance %, and actual_start / actual_finish dates
+        Recalculates progress %, planned_progress_pct, status, variance %, planned_start/finish, and actual_start/finish dates.
         Rule: Project actual_finish is ONLY set if ALL milestones with weight > 0 are 100% completed.
-        In that case, actual_finish = latest finish date of milestones with weight > 0.
-        Otherwise, actual_finish = None (shows as '-').
         """
         milestones = prj.get("milestones", [])
+        for m in milestones:
+            w = float(m.get("weight", 0.0) or 0.0)
+            act_p = float(m.get("actual_pct", 0.0) or 0.0)
+            m["actual_contribution"] = round(act_p * w, 6)
+
         total_act = sum(m["actual_contribution"] for m in milestones)
-        prj["actual_progress_pct"] = round(min(100.0, total_act * 100), 2)
-        if "planned_progress_pct" not in prj or prj["planned_progress_pct"] is None:
-            prj["planned_progress_pct"] = self.calculate_planned_progress_today(milestones)
+        prj["actual_progress_pct"] = round(min(100.0, total_act * 100.0), 2)
+        prj["planned_progress_pct"] = self.calculate_planned_progress_today(milestones)
         prj["variance_pct"] = round(prj["actual_progress_pct"] - prj["planned_progress_pct"], 2)
         
         if prj["actual_progress_pct"] >= 99.9:
@@ -879,6 +878,12 @@ class ProjectEngine:
         else:
             prj["status"] = "DELAYED"
             prj["status_th"] = "ล่าช้ากว่าแผน"
+
+        # Always keep project planned_start and planned_finish synced with MASTER milestones
+        p_s_dates = [parse_date(m.get("planned_start")) for m in milestones if parse_date(m.get("planned_start"))]
+        prj["planned_start"] = min(p_s_dates).strftime('%Y-%m-%d') if p_s_dates else None
+        p_f_dates = [parse_date(m.get("planned_finish")) for m in milestones if parse_date(m.get("planned_finish"))]
+        prj["planned_finish"] = max(p_f_dates).strftime('%Y-%m-%d') if p_f_dates else None
             
         # Calculate actual_start: minimum start date of any started milestone
         start_dates = []
@@ -907,10 +912,11 @@ class ProjectEngine:
             
         prj["s_curve"] = self.generate_project_scurve(prj)
 
-    def update_milestone(self, project_id: str, milestone_name: str = "", actual_pct: float = 0.0, 
+    def update_milestone(self, project_id: str, milestone_name: str = "", actual_pct: Optional[float] = None, 
                          actual_start: Optional[str] = None, actual_finish: Optional[str] = None,
                          milestone_index: Optional[int] = None,
-                         planned_start: Optional[str] = None, planned_finish: Optional[str] = None) -> bool:
+                         planned_start: Optional[str] = None, planned_finish: Optional[str] = None,
+                         weight: Optional[float] = None) -> bool:
         if project_id not in self.projects_dict:
             return False
             
@@ -946,44 +952,91 @@ class ProjectEngine:
                     
         if not target_m:
             return False
+
+        # Update Planned fields (from MASTER tab or Web Editor)
+        if planned_start is not None:
+            ps_clean = str(planned_start).strip()
+            if ps_clean in ("", "-", "None"):
+                target_m["planned_start"] = None
+            else:
+                d = parse_date(ps_clean)
+                target_m["planned_start"] = d.strftime('%Y-%m-%d') if d else ps_clean
+
+        if planned_finish is not None:
+            pf_clean = str(planned_finish).strip()
+            if pf_clean in ("", "-", "None"):
+                target_m["planned_finish"] = None
+            else:
+                d = parse_date(pf_clean)
+                target_m["planned_finish"] = d.strftime('%Y-%m-%d') if d else pf_clean
+
+        if weight is not None:
+            target_m["weight"] = round(max(0.0, min(1.0, float(weight))), 6)
+
+        # Update Actual fields if provided
+        if actual_pct is not None or actual_start is not None or actual_finish is not None:
+            cur_pct = target_m.get("actual_pct", 0.0) if actual_pct is None else float(actual_pct)
+            if actual_start is not None:
+                as_clean = str(actual_start).strip()
+                if as_clean in ("", "-", "None"):
+                    target_m["actual_start"] = None
+                else:
+                    d = parse_date(as_clean)
+                    target_m["actual_start"] = d.strftime('%Y-%m-%d') if d else as_clean
+
+            if cur_pct == 0.0:
+                if actual_finish and str(actual_finish).strip() not in ("", "-", "None"):
+                    cur_pct = 1.0
+                elif target_m.get("actual_start"):
+                    cur_pct = 0.5
+                    
+            target_m["actual_pct"] = max(0.0, min(1.0, cur_pct))
             
-        if actual_pct == 0.0:
-            if actual_finish:
-                actual_pct = 1.0
-            elif actual_start:
-                actual_pct = 0.5
+            # User Rule: If actual_pct < 100%, do not display/keep finish date
+            if target_m["actual_pct"] >= 1.0:
+                af_clean = str(actual_finish).strip() if actual_finish else ""
+                if af_clean and af_clean not in ("", "-", "None"):
+                    d = parse_date(af_clean)
+                    target_m["actual_finish"] = d.strftime('%Y-%m-%d') if d else af_clean
+                else:
+                    target_m["actual_finish"] = target_m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
+            else:
+                target_m["actual_finish"] = None
                 
-        target_m["actual_pct"] = max(0.0, min(1.0, actual_pct))
-        if actual_start:
-            target_m["actual_start"] = actual_start
+            target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
 
-        if planned_start:
-            target_m["planned_start"] = planned_start
-        if planned_finish:
-            target_m["planned_finish"] = planned_finish
-            
-        # User Rule: If actual_pct < 100%, do not display/keep finish date
-        if target_m["actual_pct"] >= 1.0:
-            target_m["actual_finish"] = actual_finish or target_m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
-        else:
-            target_m["actual_finish"] = None
-            
-        target_m["status"] = "COMPLETED" if target_m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if target_m["actual_pct"] > 0 else "PENDING")
-        target_m["actual_contribution"] = round(target_m["actual_pct"] * target_m["weight"], 4)
-        target_m["last_webhook_edit"] = time.time()
-        prj["last_webhook_edit"] = time.time()
-        
-        # Update overall planned finish / start of project if milestones changed
-        p_dates = [parse_date(m.get("planned_finish")) for m in prj.get("milestones", []) if parse_date(m.get("planned_finish"))]
-        if p_dates:
-            prj["planned_finish"] = max(p_dates).strftime('%Y-%m-%d')
-        p_s_dates = [parse_date(m.get("planned_start")) for m in prj.get("milestones", []) if parse_date(m.get("planned_start"))]
-        if p_s_dates:
-            prj["planned_start"] = min(p_s_dates).strftime('%Y-%m-%d')
-
+        target_m["actual_contribution"] = round(target_m.get("actual_pct", 0.0) * target_m.get("weight", 0.0), 6)
         self.recalculate_project_metrics(prj)
         self.save_to_cache()
         return True
+
+    def _find_project_strict(self, name_str: str, order_str: str = "", lot_str: str = "", allow_order_fallback: bool = False) -> Optional[dict]:
+        """
+        Matches a project strictly by:
+          1. Exact project name (100% unique across all 137 projects in MASTER & Progress)
+          2. Whitespace-normalized project name
+          3. Only if allow_order_fallback=True (e.g. webhook without name): Order No + Lot
+        """
+        if name_str:
+            clean_n = name_str.strip().lower()
+            for p in self.all_projects:
+                if p.get("name", "").strip().lower() == clean_n:
+                    return p
+            clean_nospace = "".join(clean_n.split())
+            for p in self.all_projects:
+                if "".join(p.get("name", "").lower().split()) == clean_nospace:
+                    return p
+        if allow_order_fallback and order_str:
+            o_clean = str(order_str).strip()
+            if lot_str:
+                l_clean = str(lot_str).strip().lower()
+                for p in self.all_projects:
+                    if str(p.get("order_no", "")).strip() == o_clean and str(p.get("lot", "")).strip().lower() == l_clean:
+                        return p
+            for p in self.all_projects:
+                if str(p.get("order_no", "")).strip() == o_clean:
+                    return p
+        return None
 
     def batch_sync_from_sheet_data(self, sheet_rows: list, m_names: list) -> int:
         updated_projects = 0
@@ -995,11 +1048,7 @@ class ProjectEngine:
                 continue
             
             p_order = row[1].strip() if len(row) > 1 else ''
-            target_prj = None
-            for p in self.all_projects:
-                if p['name'].strip().lower() == p_name.lower() or (p_order and str(p.get('order_no')) == p_order):
-                    target_prj = p
-                    break
+            target_prj = self._find_project_strict(p_name, p_order)
                     
             if not target_prj:
                 print(f"[BatchSync Ingest] Auto-ingesting new project from sheet data: '{p_name}'")
@@ -1020,13 +1069,8 @@ class ProjectEngine:
                 m_name = m_names[m_idx]
                 a_start = row[c].strip() if c < len(row) else ''
                 a_finish = row[c+1].strip() if c+1 < len(row) else ''
-                pct_raw = row[c+2].strip().replace('%', '') if c+2 < len(row) else '0'
-                try:
-                    val = float(pct_raw)
-                    if val > 1.0:
-                        val = val / 100.0
-                except:
-                    val = 0.0
+                pct_raw = row[c+2].strip() if c+2 < len(row) else '0'
+                val = safe_parse_progress_pct(pct_raw, fallback=0.0)
                     
                 for m in target_prj.get("milestones", []):
                     if m["name"].strip().lower() == m_name.strip().lower():
@@ -1038,187 +1082,292 @@ class ProjectEngine:
                         else:
                             m["actual_finish"] = None
                         m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
-                        m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
+                        m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 6)
                         break
                         
                 m_idx += 1
                 
             self.recalculate_project_metrics(target_prj)
-    def sync_from_google_sheet_csv(self, sheet_id: str = DEFAULT_SHEET_ID, gid: str = '669434805') -> int:
+        return updated_projects
+
+    def sync_from_google_sheet_csv(self, sheet_id: str = DEFAULT_SHEET_ID, gid: str = '669434805', master_gid: str = '283366816') -> int:
         """
-        Directly fetches latest CSV from Google Sheet and syncs projects & milestones.
-        Optimized with diff-checking (1700x speedup) and stale CSV protection to prevent recent live edits from disappearing.
+        Directly fetches BOTH:
+          1. Tab 'MASTER' (gid=283366816) -> Single Source of Truth for Per-Site Plan (Planned Start, Planned Finish, Weight %, Lot, Capacity, Installation, Type, BU)
+          2. Tab 'Progress' (gid=669434805) -> Single Source of Truth for Per-Site Actuals (Actual Start, Actual Finish, Actual %)
+        Optimized with in-memory diff checking so only modified projects trigger recalculation and cache write.
         """
         import urllib.request
         import csv
         import io
-        
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                text = resp.read().decode('utf-8')
-        except Exception as e:
-            print(f"[Engine] Failed to download Google Sheet CSV: {e}")
-            return 0
-            
-        rows = list(csv.reader(io.StringIO(text)))
-        if len(rows) < 6:
-            return 0
-            
-        changed_projects_count = 0
-        now_ts = time.time()
-        
-        for r_idx in range(5, len(rows)):
-            row = rows[r_idx]
-            if len(row) < 4:
-                continue
-            order_str = row[2].strip() if len(row) > 2 else ''
-            name_str = row[3].strip() if len(row) > 3 else ''
-            if not name_str:
-                continue
-                
-            target_prj = None
-            # 1. Match by order_no if available
-            if order_str:
-                for p in self.all_projects:
-                    if str(p.get("order_no", "")).strip() == order_str:
-                        target_prj = p
-                        break
-            # 2. Match by exact name
-            if not target_prj and name_str:
-                clean_n = name_str.lower().strip()
-                for p in self.all_projects:
-                    if p["name"].strip().lower() == clean_n:
-                        target_prj = p
-                        break
-            # 3. Match by normalized name
-            if not target_prj and name_str:
-                clean_n = "".join(name_str.lower().split())
-                for p in self.all_projects:
-                    if "".join(p["name"].lower().split()) == clean_n:
-                        target_prj = p
-                        break
-                        
-            if not target_prj:
-                # Approach A: Auto-ingest newly added project from Google Sheet
-                print(f"[SheetSync Ingest] Auto-ingesting new project from Google Sheet: '{name_str}' (Order: {order_str})")
-                new_lot = row[4].strip() if len(row) > 4 and row[4].strip() else "Lot 1"
-                new_cap = 100.0
-                if len(row) > 5 and row[5].strip():
-                    try:
-                        new_cap = float(row[5].strip().replace(',', ''))
-                    except:
-                        new_cap = 100.0
-                target_prj = self.add_new_project({
-                    "name": name_str,
-                    "order_no": order_str,
-                    "lot": new_lot,
-                    "capacity_kwp": new_cap,
-                    "installation_type": "Solar Rooftop",
-                    "type_code": 1
-                }, trigger_cache_save=False)
-                changed_projects_count += 1
-                
-            milestones = target_prj.get("milestones", [])
-            prj_has_change = False
-            
-            for m_idx in range(min(len(milestones), 33)):
-                col_base = 7 + (m_idx * 3)
-                if col_base + 2 < len(row):
-                    raw_start = row[col_base].strip()
-                    raw_finish = row[col_base + 1].strip()
-                    raw_pct = row[col_base + 2].strip()
-                    
-                    m = milestones[m_idx]
-                    pct_val = safe_parse_progress_pct(raw_pct, fallback=m.get("actual_pct", 0.0))
-                    
-                    # 🛡️ STALE CSV PROTECTION:
-                    # If this milestone was edited via live webhook or web app within 15 minutes (900s),
-                    # or is pending in sync_manager, DO NOT OVERWRITE with lagged CSV!
-                    last_edit = m.get("last_webhook_edit", 0)
-                    is_protected = False
-                    if getattr(self, "sync_manager", None):
-                        is_protected = self.sync_manager.is_milestone_protected(target_prj["id"], m.get("name", ""))
-                    if (is_protected or (now_ts - last_edit) < 900) and abs(m.get("actual_pct", 0.0) - pct_val) > 0.001:
-                        continue
-                        
-                    # Parse dates
-                    new_start = None
-                    if raw_start and raw_start != '-':
-                        d = parse_date(raw_start)
-                        new_start = d.strftime('%Y-%m-%d') if d else raw_start
-                        
-                    new_finish = None
-                    if raw_finish and raw_finish != '-':
-                        d = parse_date(raw_finish)
-                        new_finish = d.strftime('%Y-%m-%d') if d else raw_finish
 
-                    # Auto-complete pct_val if user entered dates in sheet but left % empty
-                    if pct_val == 0.0:
-                        if new_finish:
-                            pct_val = 1.0
-                        elif new_start and not new_finish:
-                            pct_val = 0.5
-                            
-                    # User Rule: If pct_val < 100%, do not display/keep finish date
-                    if pct_val >= 1.0:
-                        new_finish = new_finish or m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
-                    else:
-                        new_finish = None
-                        
-                    # Check if anything actually changed
-                    pct_diff = abs(m.get("actual_pct", 0.0) - pct_val) > 0.001
-                    start_diff = (m.get("actual_start") != new_start)
-                    finish_diff = (m.get("actual_finish") != new_finish)
-                    
-                    if pct_diff or start_diff or finish_diff:
-                        prj_has_change = True
-                        m["actual_pct"] = max(0.0, min(1.0, pct_val))
-                        m["actual_start"] = new_start
-                        m["actual_finish"] = new_finish
-                        m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
-                        m["actual_contribution"] = round(m["actual_pct"] * m["weight"], 4)
-                        
-            if prj_has_change:
-                changed_projects_count += 1
-                self.recalculate_project_metrics(target_prj)
-
-        # 🛡️ AUTOMATIC DELETION PRUNING:
-        # Collect all project names present in the live Google Sheet CSV
+        changed_projects = set()
         sheet_project_names = set()
-        for r_idx in range(5, len(rows)):
-            row = rows[r_idx]
-            if len(row) >= 4:
-                n = row[3].strip().lower()
-                if n:
-                    sheet_project_names.add(n)
-                    sheet_project_names.add("".join(n.split()))
 
-        # Remove any project from local cache that no longer exists in Google Sheet
-        projects_to_keep = []
+        # =====================================================================
+        # PART 1: SYNC PLAN STRICTLY FROM TAB 'MASTER' (gid=283366816)
+        # =====================================================================
+        master_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={master_gid}"
+        master_rows = []
+        try:
+            req_m = urllib.request.Request(master_url, headers={'User-Agent': 'Mozilla/5.0', 'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(req_m, timeout=25) as resp_m:
+                master_text = resp_m.read().decode('utf-8')
+            master_rows = list(csv.reader(io.StringIO(master_text)))
+        except Exception as e:
+            print(f"[Engine] Warning: Failed to download MASTER CSV: {e}")
+
+        if len(master_rows) >= 5:
+            # In MASTER tab, project rows start at index 4 (Row 5 in Sheet)
+            for r_idx in range(4, len(master_rows)):
+                row = master_rows[r_idx]
+                if len(row) < 7:
+                    continue
+                bu_str = row[0].strip() or "ทั่วไป"
+                order_str = row[1].strip()
+                name_str = row[2].strip()
+                lot_str = row[3].strip() or "Lot 1"
+                cap_raw = row[4].strip().replace(',', '')
+                inst_str = row[5].strip() or "Solar Rooftop"
+                type_raw = row[6].strip()
+
+                if not name_str or name_str in ("รายชื่อ", "None"):
+                    continue
+
+                sheet_project_names.add(name_str.lower())
+                sheet_project_names.add("".join(name_str.lower().split()))
+
+                try:
+                    cap_val = round(float(cap_raw), 2) if cap_raw else 0.0
+                except:
+                    cap_val = 0.0
+
+                try:
+                    type_val = int(float(type_raw)) if type_raw else 1
+                except:
+                    type_val = 1
+
+                try:
+                    order_val = int(float(order_str)) if order_str and order_str.replace('.', '', 1).isdigit() else order_str
+                except:
+                    order_val = order_str
+
+                target_prj = self._find_project_strict(name_str, order_str, lot_str)
+                if not target_prj:
+                    print(f"[MasterSync Ingest] Auto-ingesting project from MASTER: '{name_str}' (Order: {order_str}, Lot: {lot_str})")
+                    target_prj = self.add_new_project({
+                        "name": name_str,
+                        "order_no": order_val,
+                        "business_unit": bu_str,
+                        "lot": lot_str,
+                        "capacity_kwp": cap_val,
+                        "installation_type": inst_str,
+                        "type_code": type_val
+                    }, trigger_cache_save=False)
+                    changed_projects.add(target_prj["id"])
+
+                prj_changed = False
+                # Sync project metadata strictly from MASTER
+                if target_prj.get("name") != name_str:
+                    target_prj["name"] = name_str
+                    prj_changed = True
+                if str(target_prj.get("order_no", "")) != str(order_val):
+                    target_prj["order_no"] = order_val
+                    prj_changed = True
+                if target_prj.get("business_unit") != bu_str:
+                    target_prj["business_unit"] = bu_str
+                    prj_changed = True
+                if target_prj.get("lot") != lot_str:
+                    target_prj["lot"] = lot_str
+                    prj_changed = True
+                if abs(float(target_prj.get("capacity_kwp", 0.0) or 0.0) - cap_val) > 0.005:
+                    target_prj["capacity_kwp"] = cap_val
+                    prj_changed = True
+                if target_prj.get("installation_type") != inst_str:
+                    target_prj["installation_type"] = inst_str
+                    prj_changed = True
+                if int(target_prj.get("type_code", 1) or 1) != type_val:
+                    target_prj["type_code"] = type_val
+                    prj_changed = True
+
+                # Sync all 33 Milestones' Planned Start, Planned Finish, and Weight % strictly from MASTER
+                milestones = target_prj.get("milestones", [])
+                for m_idx in range(min(len(milestones), 33)):
+                    col_base = 7 + (m_idx * 3)
+                    if col_base + 2 >= len(row):
+                        break
+                    m = milestones[m_idx]
+
+                    # Check if this milestone's plan is currently being written by Web App (12s window)
+                    if getattr(self, "sync_manager", None) and self.sync_manager.is_milestone_protected(target_prj["id"], m.get("name", "")):
+                        continue
+
+                    raw_ps = row[col_base].strip()
+                    raw_pf = row[col_base + 1].strip()
+                    raw_pw = row[col_base + 2].strip()
+
+                    new_ps = None
+                    if raw_ps and raw_ps not in ('-', 'None', ''):
+                        d_ps = parse_date(raw_ps)
+                        new_ps = d_ps.strftime('%Y-%m-%d') if d_ps else None
+
+                    new_pf = None
+                    if raw_pf and raw_pf not in ('-', 'None', ''):
+                        d_pf = parse_date(raw_pf)
+                        new_pf = d_pf.strftime('%Y-%m-%d') if d_pf else None
+
+                    new_w = 0.0
+                    if raw_pw and raw_pw not in ('-', 'None', ''):
+                        new_w = round(safe_parse_progress_pct(raw_pw, fallback=0.0), 6)
+
+                    ps_diff = (m.get("planned_start") != new_ps)
+                    pf_diff = (m.get("planned_finish") != new_pf)
+                    w_diff = abs(float(m.get("weight", 0.0) or 0.0) - new_w) > 0.0001
+
+                    if ps_diff or pf_diff or w_diff:
+                        m["planned_start"] = new_ps
+                        m["planned_finish"] = new_pf
+                        m["weight"] = new_w
+                        m["actual_contribution"] = round(float(m.get("actual_pct", 0.0) or 0.0) * new_w, 6)
+                        prj_changed = True
+
+                if prj_changed:
+                    changed_projects.add(target_prj["id"])
+
+        # =====================================================================
+        # PART 2: SYNC ACTUALS FROM TAB 'Progress' (gid=669434805)
+        # =====================================================================
+        prog_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+        prog_rows = []
+        try:
+            req_p = urllib.request.Request(prog_url, headers={'User-Agent': 'Mozilla/5.0', 'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(req_p, timeout=25) as resp_p:
+                prog_text = resp_p.read().decode('utf-8')
+            prog_rows = list(csv.reader(io.StringIO(prog_text)))
+        except Exception as e:
+            print(f"[Engine] Warning: Failed to download Progress CSV: {e}")
+
+        if len(prog_rows) >= 6:
+            # In Progress tab, project rows start at index 5 (Row 6 in Sheet)
+            for r_idx in range(5, len(prog_rows)):
+                row = prog_rows[r_idx]
+                if len(row) < 4:
+                    continue
+                order_str = row[2].strip() if len(row) > 2 else ''
+                name_str = row[3].strip() if len(row) > 3 else ''
+                lot_str = row[4].strip() if len(row) > 4 else ''
+                if not name_str or name_str in ("รายชื่อ", "None"):
+                    continue
+
+                sheet_project_names.add(name_str.lower())
+                sheet_project_names.add("".join(name_str.lower().split()))
+
+                target_prj = self._find_project_strict(name_str, order_str, lot_str)
+                if not target_prj:
+                    print(f"[SheetSync Ingest] Auto-ingesting new project from Progress Sheet: '{name_str}' (Order: {order_str})")
+                    new_lot = lot_str or "Lot 1"
+                    new_cap = 100.0
+                    if len(row) > 5 and row[5].strip():
+                        try:
+                            new_cap = float(row[5].strip().replace(',', ''))
+                        except:
+                            new_cap = 100.0
+                    target_prj = self.add_new_project({
+                        "name": name_str,
+                        "order_no": order_str,
+                        "lot": new_lot,
+                        "capacity_kwp": new_cap,
+                        "installation_type": "Solar Rooftop",
+                        "type_code": 1
+                    }, trigger_cache_save=False)
+                    changed_projects.add(target_prj["id"])
+
+                milestones = target_prj.get("milestones", [])
+                prj_has_change = False
+
+                for m_idx in range(min(len(milestones), 33)):
+                    col_base = 7 + (m_idx * 3)
+                    if col_base + 2 < len(row):
+                        raw_start = row[col_base].strip()
+                        raw_finish = row[col_base + 1].strip()
+                        raw_pct = row[col_base + 2].strip()
+
+                        m = milestones[m_idx]
+                        if getattr(self, "sync_manager", None) and self.sync_manager.is_milestone_protected(target_prj["id"], m.get("name", "")):
+                            continue
+
+                        pct_val = safe_parse_progress_pct(raw_pct, fallback=0.0) if raw_pct not in ("", "-") else 0.0
+
+                        new_start = None
+                        if raw_start and raw_start not in ('-', 'None', ''):
+                            d = parse_date(raw_start)
+                            new_start = d.strftime('%Y-%m-%d') if d else raw_start
+
+                        new_finish = None
+                        if raw_finish and raw_finish not in ('-', 'None', ''):
+                            d = parse_date(raw_finish)
+                            new_finish = d.strftime('%Y-%m-%d') if d else raw_finish
+
+                        # Auto-complete pct_val if user entered dates in sheet but left % empty
+                        if pct_val == 0.0:
+                            if new_finish:
+                                pct_val = 1.0
+                            elif new_start and not new_finish:
+                                pct_val = 0.5
+
+                        # User Rule: If pct_val < 100%, do not display/keep finish date
+                        if pct_val >= 1.0:
+                            new_finish = new_finish or m.get("actual_finish") or date.today().strftime('%Y-%m-%d')
+                        else:
+                            new_finish = None
+
+                        pct_diff = abs(float(m.get("actual_pct", 0.0) or 0.0) - pct_val) > 0.0005
+                        start_diff = (m.get("actual_start") != new_start)
+                        finish_diff = (m.get("actual_finish") != new_finish)
+
+                        if pct_diff or start_diff or finish_diff:
+                            prj_has_change = True
+                            m["actual_pct"] = max(0.0, min(1.0, pct_val))
+                            m["actual_start"] = new_start
+                            m["actual_finish"] = new_finish
+                            m["status"] = "COMPLETED" if m["actual_pct"] >= 1.0 else ("IN_PROGRESS" if m["actual_pct"] > 0 else "PENDING")
+                            m["actual_contribution"] = round(m["actual_pct"] * float(m.get("weight", 0.0) or 0.0), 6)
+
+                if prj_has_change:
+                    changed_projects.add(target_prj["id"])
+
+        # Recalculate metrics for all changed projects
+        for pid in changed_projects:
+            if pid in self.projects_dict:
+                self.recalculate_project_metrics(self.projects_dict[pid])
+
+        # =====================================================================
+        # PART 3: AUTOMATIC DELETION PRUNING
+        # =====================================================================
         deleted_count = 0
-        for p in self.all_projects:
-            p_name = p.get("name", "").strip().lower()
-            p_nospace = "".join(p_name.split())
-            if p_name in sheet_project_names or p_nospace in sheet_project_names:
-                projects_to_keep.append(p)
-            else:
-                deleted_count += 1
-                print(f"[SheetSync Prune] Removing project '{p.get('name')}' (no longer in Google Sheet)")
+        if sheet_project_names:
+            projects_to_keep = []
+            for p in self.all_projects:
+                p_name = p.get("name", "").strip().lower()
+                p_nospace = "".join(p_name.split())
+                if p_name in sheet_project_names or p_nospace in sheet_project_names:
+                    projects_to_keep.append(p)
+                else:
+                    deleted_count += 1
+                    print(f"[SheetSync Prune] Removing project '{p.get('name')}' (no longer in MASTER/Progress)")
 
-        if deleted_count > 0:
-            self.all_projects = projects_to_keep
-            self.projects_dict = {p['id']: p for p in self.all_projects}
+            if deleted_count > 0:
+                self.all_projects = projects_to_keep
+                self.projects_dict = {p['id']: p for p in self.all_projects}
+
+        total_updated = len(changed_projects) + deleted_count
+        if total_updated > 0:
             self.active_projects = [p for p in self.all_projects if not self.is_cc_project(p)]
             self.projects = self.active_projects
-            changed_projects_count += deleted_count
-
-        if changed_projects_count > 0:
-            print(f"[Engine] Synced and updated {changed_projects_count} changed/pruned projects from Google Sheet.")
+            print(f"[Engine] Synced and updated {total_updated} changed/pruned projects from MASTER & Progress tabs.")
             self.save_to_cache()
-            
-        return changed_projects_count
+
+        return total_updated
 
     def load_issues_cache(self):
         if os.path.exists(self.issues_path):

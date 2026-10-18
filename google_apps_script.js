@@ -34,8 +34,78 @@ function installedOnEdit(e) {
     const sheetName = sheet.getName();
     const sNameLower = sheetName.trim().toLowerCase();
     
-    // ตรวจสอบเฉพาะชีต Progress
-    if (sNameLower.includes('progress')) {
+    // 1. ตรวจสอบชีต MASTER (ข้อมูลแผนงานรายไซต์: Planned Start, Planned Finish, Weight %, Lot, Capacity)
+    if (sNameLower === 'master') {
+      const startRow = e.range.getRow();
+      const numRows = e.range.getNumRows();
+      const startCol = e.range.getColumn();
+      const numCols = e.range.getNumColumns();
+
+      const endRow = startRow + numRows - 1;
+      const endCol = startCol + numCols - 1;
+
+      // ข้อมูลโครงการในแท็บ MASTER เริ่มที่แถว 5 เป็นต้นไป
+      if (endRow >= 5) {
+        const effStartRow = Math.max(5, startRow);
+        const effStartMIdx = Math.max(0, Math.floor((Math.max(8, startCol) - 8) / 3));
+        const effEndMIdx = Math.min(32, Math.floor((Math.max(8, endCol) - 8) / 3));
+
+        for (let r = effStartRow; r <= endRow; r++) {
+          const bu = sheet.getRange(r, 1).getValue();       // Col A = BU
+          const orderNo = sheet.getRange(r, 2).getValue();  // Col B = ลำดับ
+          const prjName = sheet.getRange(r, 3).getValue();  // Col C = รายชื่อโครงการ
+          const lotName = sheet.getRange(r, 4).getValue();  // Col D = Lot
+          const capVal = sheet.getRange(r, 5).getValue();   // Col E = Capacity
+          const instVal = sheet.getRange(r, 6).getValue();  // Col F = Installation
+          const typeVal = sheet.getRange(r, 7).getValue();  // Col G = TYPE
+          if (!prjName) continue;
+
+          for (let mIdx = effStartMIdx; mIdx <= effEndMIdx; mIdx++) {
+            const headerCol = (mIdx * 3) + 8;
+            const milestoneName = sheet.getRange(2, headerCol).getValue(); // แถว 2 ใน MASTER = ชื่อ Milestone
+
+            const rawPStart = sheet.getRange(r, headerCol).getValue();
+            const rawPFinish = sheet.getRange(r, headerCol + 1).getValue();
+            const rawWeight = sheet.getRange(r, headerCol + 2).getValue();
+
+            const plannedStart = formatSheetDate(rawPStart);
+            const plannedFinish = formatSheetDate(rawPFinish);
+
+            let weightVal = 0;
+            if (typeof rawWeight === 'number') {
+              weightVal = rawWeight > 1.0 ? rawWeight / 100.0 : rawWeight;
+            } else if (rawWeight) {
+              const s = String(rawWeight).trim();
+              const hasPct = s.includes('%');
+              const p = parseFloat(s.replace('%', '').trim());
+              if (!isNaN(p)) {
+                weightVal = (hasPct || p > 1.0) ? p / 100.0 : p;
+              }
+            }
+
+            notifyWebDashboard({
+              action: 'master_edited',
+              sheet: 'MASTER',
+              row: r,
+              business_unit: String(bu || ''),
+              order_no: String(orderNo || ''),
+              project_name: String(prjName),
+              lot: String(lotName || ''),
+              capacity_kwp: capVal,
+              installation_type: String(instVal || ''),
+              type_code: typeVal,
+              milestone_name: String(milestoneName || ''),
+              milestone_index: mIdx,
+              planned_start: plannedStart,
+              planned_finish: plannedFinish,
+              weight: weightVal
+            });
+          }
+        }
+      }
+    }
+    // 2. ตรวจสอบชีต Progress (ข้อมูลผลงานจริง: Actual Start, Actual Finish, Actual %)
+    else if (sNameLower.includes('progress') && !sNameLower.includes('cal')) {
       const startRow = e.range.getRow();
       const numRows = e.range.getNumRows();
       const startCol = e.range.getColumn();
@@ -53,6 +123,7 @@ function installedOnEdit(e) {
         for (let r = effStartRow; r <= endRow; r++) {
           const orderNo = sheet.getRange(r, 3).getValue(); // Col C = ลำดับ (Order No)
           const prjName = sheet.getRange(r, 4).getValue(); // Col D = ชื่อโครงการ (Project Name)
+          const lotName = sheet.getRange(r, 5).getValue(); // Col E = Lot
           if (!prjName) continue;
 
           for (let mIdx = effStartMIdx; mIdx <= effEndMIdx; mIdx++) {
@@ -71,10 +142,11 @@ function installedOnEdit(e) {
             if (typeof rawPct === 'number') {
               actualPct = rawPct > 1.0 ? rawPct / 100.0 : rawPct;
             } else if (rawPct) {
-              const cleanStr = String(rawPct).replace('%', '').trim();
-              const p = parseFloat(cleanStr);
+              const s = String(rawPct).trim();
+              const hasPct = s.includes('%');
+              const p = parseFloat(s.replace('%', '').trim());
               if (!isNaN(p)) {
-                actualPct = p > 1.0 ? p / 100.0 : p;
+                actualPct = (hasPct || p > 1.0) ? p / 100.0 : p;
               }
             }
 
@@ -94,6 +166,7 @@ function installedOnEdit(e) {
               row: r,
               order_no: String(orderNo || ''),
               project_name: String(prjName),
+              lot: String(lotName || ''),
               milestone_name: String(milestoneName || ''),
               milestone_index: mIdx,
               actual_start: actualStart,
@@ -105,7 +178,7 @@ function installedOnEdit(e) {
         }
       }
     }
-    // ตรวจสอบชีต Weekly_Issues เมื่อมีการพิมพ์หรือแก้ไขปัญหาใน Google Sheet
+    // 3. ตรวจสอบชีต Weekly_Issues เมื่อมีการพิมพ์หรือแก้ไขปัญหาใน Google Sheet
     else if (sNameLower.includes('issue')) {
       const editRow = e.range.getRow();
       if (editRow >= 2) {
@@ -206,10 +279,17 @@ function onEdit(e) {
 function doGet(e) {
   try {
     if (e && e.parameter) {
+      if (e.parameter.action === 'keep_alive') {
+        keepRenderAwake();
+        ensureKeepRenderAwakeTriggerSilent();
+        return createJsonResponse({ status: 'success', message: 'Render pinged back from Google Apps Script!' });
+      }
       if (e.parameter.action === 'update_milestone' || e.parameter.action === 'save_progress') {
         return handleUpdateMilestone(e.parameter);
       }
       if (e.parameter.action === 'get_issues') {
+        keepRenderAwake();
+        ensureKeepRenderAwakeTriggerSilent();
         return createJsonResponse({ status: 'success', issues: getAllIssuesFromSheet() });
       }
       if (e.parameter.action === 'get_photos') {
@@ -226,6 +306,7 @@ function doGet(e) {
         return createJsonResponse({ status: 'success', sheets: ss.getSheets().map(s => s.getName()) });
       }
     }
+    keepRenderAwake();
     return createJsonResponse({ status: 'success', message: 'KPGreenergy 2-Way Sync Web App is Live and Ready!' });
   } catch (err) {
     return createJsonResponse({ status: 'error', message: err.toString() });
@@ -525,24 +606,39 @@ function handleUpdateMilestone(data) {
     const rangeData = progSheet.getRange(6, 3, numRows, 2).getValues();
 
     let targetRow = -1;
-    for (let i = 0; i < rangeData.length; i++) {
-      const rowOrder = String(rangeData[i][0] || '').trim();
-      const rowName = String(rangeData[i][1] || '').trim().toLowerCase();
-
-      // 1. Match by Order No if available and not empty
-      if (orderNo && rowOrder && rowOrder === orderNo) {
-        targetRow = i + 6;
-        break;
+    // 1. Match by Exact Project Name first (100% unique across all projects)
+    if (projectName) {
+      for (let i = 0; i < rangeData.length; i++) {
+        const rowName = String(rangeData[i][1] || '').trim().toLowerCase();
+        if (rowName && rowName === projectName) {
+          targetRow = i + 6;
+          break;
+        }
       }
-      // 2. Match by Project Name (Exact or substring)
-      if (projectName && rowName && (rowName === projectName || rowName.includes(projectName) || projectName.includes(rowName))) {
-        targetRow = i + 6;
-        break;
+    }
+    // 2. Match by Substring Project Name
+    if (targetRow === -1 && projectName) {
+      for (let i = 0; i < rangeData.length; i++) {
+        const rowName = String(rangeData[i][1] || '').trim().toLowerCase();
+        if (rowName && (rowName.includes(projectName) || projectName.includes(rowName))) {
+          targetRow = i + 6;
+          break;
+        }
+      }
+    }
+    // 3. Fallback to Order No only if name was not matched
+    if (targetRow === -1 && orderNo) {
+      for (let i = 0; i < rangeData.length; i++) {
+        const rowOrder = String(rangeData[i][0] || '').trim();
+        if (rowOrder && rowOrder === orderNo) {
+          targetRow = i + 6;
+          break;
+        }
       }
     }
 
     if (targetRow === -1) {
-      return createJsonResponse({ status: 'error', message: 'ไม่พบโครงการ: ' + (orderNo || projectName) });
+      return createJsonResponse({ status: 'error', message: 'ไม่พบโครงการ: ' + (projectName || orderNo) });
     }
 
     // คำนวณคอลัมน์ของ Milestone
@@ -575,14 +671,38 @@ function handleUpdateMilestone(data) {
     }
     progSheet.getRange(targetRow, targetCol, 1, 3).setValues([[newStart, newFinish, actualPct]]);
 
-    // หากมีการระบุ planned_finish หรือ planned_start ให้อัปเดตลงชีต MASTER/Plan ด้วย
+    // หากมีการระบุ planned_finish หรือ planned_start ให้อัปเดตลงชีต MASTER โดยค้นหาแถวที่ตรงกับชื่อโครงการใน MASTER (แถว 5 เป็นต้นไป)
     if (data.planned_start || data.planned_finish) {
-      const planSheet = findPlanSheet(ss);
-      if (planSheet && targetRow > 0 && targetCol > 0) {
-        const planCells = planSheet.getRange(targetRow, targetCol, 1, 2).getValues()[0];
-        const pStart = data.planned_start || planCells[0];
-        const pFinish = data.planned_finish || planCells[1];
-        planSheet.getRange(targetRow, targetCol, 1, 2).setValues([[pStart, pFinish]]);
+      const planSheet = ss.getSheetByName('MASTER') || findPlanSheet(ss);
+      if (planSheet && targetCol > 0) {
+        const mLastRow = Math.max(145, planSheet.getLastRow());
+        const mNumRows = Math.min(145, mLastRow - 4);
+        const mRangeData = planSheet.getRange(5, 2, mNumRows, 2).getValues(); // Col B = Order, Col C = Name
+        let masterRow = -1;
+        if (projectName) {
+          for (let i = 0; i < mRangeData.length; i++) {
+            const rName = String(mRangeData[i][1] || '').trim().toLowerCase();
+            if (rName && rName === projectName) {
+              masterRow = i + 5;
+              break;
+            }
+          }
+        }
+        if (masterRow === -1 && orderNo) {
+          for (let i = 0; i < mRangeData.length; i++) {
+            const rOrder = String(mRangeData[i][0] || '').trim();
+            if (rOrder && rOrder === orderNo) {
+              masterRow = i + 5;
+              break;
+            }
+          }
+        }
+        if (masterRow > 0) {
+          const planCells = planSheet.getRange(masterRow, targetCol, 1, 2).getValues()[0];
+          const pStart = data.planned_start || planCells[0];
+          const pFinish = data.planned_finish || planCells[1];
+          planSheet.getRange(masterRow, targetCol, 1, 2).setValues([[pStart, pFinish]]);
+        }
       }
     }
 
@@ -894,23 +1014,59 @@ function keepRenderAwake() {
 }
 
 /**
- * กด Run ฟังก์ชันนี้เพียง 1 ครั้ง ระบบจะตั้งเวลาปลุกเว็บ Render ทุกๆ 10 นาทีให้อัตโนมัติ
+ * ตรวจสอบและสร้าง Trigger ปลุกเว็บ Render ทุก 10 นาทีให้อัตโนมัติหากยังไม่มี
+ */
+function ensureKeepRenderAwakeTriggerSilent() {
+  try {
+    const triggers = ScriptApp.getProjectTriggers();
+    let hasKeepAlive = false;
+    let hasOnEdit = false;
+    for (let i = 0; i < triggers.length; i++) {
+      if (triggers[i].getHandlerFunction() === 'keepRenderAwake') hasKeepAlive = true;
+      if (triggers[i].getHandlerFunction() === 'installedOnEdit') hasOnEdit = true;
+    }
+    if (!hasKeepAlive) {
+      ScriptApp.newTrigger('keepRenderAwake').timeBased().everyMinutes(10).create();
+    }
+    if (!hasOnEdit) {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      if (ss) {
+        ScriptApp.newTrigger('installedOnEdit').forSpreadsheet(ss).onEdit().create();
+      }
+    }
+  } catch (e) {}
+}
+
+/**
+ * กด Run ฟังก์ชันนี้เพียง 1 ครั้ง ระบบจะตั้งเวลาปลุกเว็บ Render ทุกๆ 10 นาที + เปิดซิงก์เรียลไทม์ (OnEdit) ให้อัตโนมัติ
  */
 function setupKeepRenderAwakeTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
+  let hasOnEdit = false;
   for (let i = 0; i < triggers.length; i++) {
     if (triggers[i].getHandlerFunction() === 'keepRenderAwake') {
       ScriptApp.deleteTrigger(triggers[i]);
+    }
+    if (triggers[i].getHandlerFunction() === 'installedOnEdit') {
+      hasOnEdit = true;
     }
   }
   ScriptApp.newTrigger('keepRenderAwake')
     .timeBased()
     .everyMinutes(10)
     .create();
+  if (!hasOnEdit) {
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      if (ss) {
+        ScriptApp.newTrigger('installedOnEdit').forSpreadsheet(ss).onEdit().create();
+      }
+    } catch (e) {}
+  }
   keepRenderAwake();
-  Logger.log('✅ ตั้งเวลาปลุกเว็บ Render ทุกๆ 10 นาทีเรียบร้อยแล้ว! เว็บจะไม่เข้าโหมด Sleep อีกต่อไป');
+  Logger.log('✅ ตั้งเวลาปลุกเว็บ Render ทุกๆ 10 นาที + เปิดซิงก์เรียลไทม์ (MASTER & Progress) เรียบร้อยแล้ว!');
   try {
-    SpreadsheetApp.getActiveSpreadsheet().toast('ตั้งเวลาปลุกเว็บ Render ทุก 10 นาทีเรียบร้อยแล้ว!', '✅ Keep-Alive ทำงานแล้ว', 6);
+    SpreadsheetApp.getActiveSpreadsheet().toast('ตั้งเวลาปลุกเว็บ Render ทุก 10 นาที + ซิงก์เรียลไทม์เรียบร้อยแล้ว!', '✅ ระบบซิงก์พร้อมทำงาน', 6);
   } catch (e) {}
 }
 

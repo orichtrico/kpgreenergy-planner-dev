@@ -65,15 +65,7 @@ engine = ProjectEngine()
 def safe_parse_progress_pct(val, fallback: Optional[float] = None) -> Optional[float]:
     """
     Robustly parses progress percentage values from string, float, or int.
-    Handles:
-      - 0.95 -> 0.95
-      - 95 -> 0.95
-      - "95%" -> 0.95
-      - "95.00%" -> 0.95
-      - "95,00%" -> 0.95 (European/Thai comma decimal)
-      - " 95 % " -> 0.95
-      - "100%" -> 1.0
-      - Invalid/unparseable text -> returns fallback WITHOUT setting to 0.0!
+    Properly handles '%' strings like '1.00%' -> 0.01 and '0.60%' -> 0.006.
     """
     if val is None:
         return fallback
@@ -83,6 +75,7 @@ def safe_parse_progress_pct(val, fallback: Optional[float] = None) -> Optional[f
     s = str(val).strip()
     if not s or s == "-":
         return fallback
+    has_pct = "%" in s
     clean = s.replace("%", "").replace(" ", "").strip()
     if "," in clean and "." not in clean:
         clean = clean.replace(",", ".")
@@ -90,14 +83,16 @@ def safe_parse_progress_pct(val, fallback: Optional[float] = None) -> Optional[f
         clean = clean.replace(",", "")
     try:
         v = float(clean)
-        return v / 100.0 if v > 1.0 else max(0.0, min(1.0, v))
+        if has_pct or v > 1.0:
+            return max(0.0, min(1.0, v / 100.0))
+        return max(0.0, min(1.0, v))
     except (ValueError, TypeError):
         return fallback
 
 
 class SyncQueueManager:
     """
-    Manages pending sync operations to Google Sheet with automatic retry and stale CSV protection.
+    Manages pending sync operations to Google Sheet with automatic retry and brief in-flight protection.
     """
     def __init__(self):
         self.pending_milestones = {}  # key: f"{prj_id}:{m_name}" -> dict
@@ -123,18 +118,24 @@ class SyncQueueManager:
                 self.pending_milestones[key]["synced"] = True
                 self.pending_milestones[key]["synced_at"] = time.time()
 
+    def clear_milestone_protection(self, project_id: str, milestone_name: str):
+        key = f"{project_id}:{milestone_name}".strip().lower()
+        with self.lock:
+            if key in self.pending_milestones:
+                del self.pending_milestones[key]
+
     def is_milestone_protected(self, project_id: str, milestone_name: str) -> bool:
         key = f"{project_id}:{milestone_name}".strip().lower()
         with self.lock:
             item = self.pending_milestones.get(key)
             if not item:
                 return False
-            # If not yet confirmed synced, ALWAYS protect!
+            # Protect while web writeback is actively in-flight (up to 20s max)
             if not item.get("synced", False):
-                return True
-            # If synced, protect for 15 minutes (900s) to allow Google Sheet's CSV export cache to catch up
+                return (time.time() - item.get("timestamp", 0)) < 20
+            # Brief 10-second grace window after writeback completes for CSV cache propagation
             synced_at = item.get("synced_at", 0)
-            return (time.time() - synced_at) < 900
+            return (time.time() - synced_at) < 10
 
     def record_issue_edit(self, issue_id: str, payload: dict):
         iid = str(issue_id).strip()
@@ -162,7 +163,16 @@ engine.sync_manager = sync_manager
 DATA_VERSION = 1
 LAST_UPDATE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 LAST_SHEET_SYNC_TIME = 0
+LAST_ISSUES_SYNC_TIME = 0
 IS_SYNCING_SHEET = False
+
+# Render Keep-Alive Auto-Pinger Configuration (Prevents 15-min Free Tier Sleep)
+RENDER_PUBLIC_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL",
+    "https://kpgreenergy-planner-dev01.onrender.com"
+).rstrip("/")
+KEEP_ALIVE_COUNT = 0
+LAST_KEEP_ALIVE_TIME = "กำลังเริ่มต้นระบบ..."
 
 def notify_data_updated():
     global DATA_VERSION, LAST_UPDATE_TIME
@@ -187,18 +197,21 @@ def sync_issues_from_sheet() -> int:
         print(f"[SheetSync Warning] Failed to sync issues from sheet: {e}")
     return 0
 
-def do_sheet_sync() -> int:
-    global LAST_SHEET_SYNC_TIME, IS_SYNCING_SHEET
+def do_sheet_sync(force_issues: bool = False) -> int:
+    global LAST_SHEET_SYNC_TIME, LAST_ISSUES_SYNC_TIME, IS_SYNCING_SHEET
     if IS_SYNCING_SHEET:
         return 0
     try:
         IS_SYNCING_SHEET = True
         count = engine.sync_from_google_sheet_csv()
-        sync_issues_from_sheet()
+        now_t = time.time()
+        if force_issues or (now_t - LAST_ISSUES_SYNC_TIME) >= 60:
+            sync_issues_from_sheet()
+            LAST_ISSUES_SYNC_TIME = now_t
         if count > 0:
             notify_data_updated()
-            print(f"[SheetSync] Successfully synced {count} projects from Google Sheet (v{DATA_VERSION}).")
-        LAST_SHEET_SYNC_TIME = time.time()
+            print(f"[SheetSync] Real-time synced {count} projects from MASTER/Progress (v{DATA_VERSION}).")
+        LAST_SHEET_SYNC_TIME = now_t
         return count
     except Exception as e:
         print(f"[SheetSync] Error syncing from Google Sheet: {e}")
@@ -207,15 +220,50 @@ def do_sheet_sync() -> int:
         IS_SYNCING_SHEET = False
 
 def trigger_background_sheet_sync():
-    threading.Thread(target=do_sheet_sync, daemon=True).start()
+    threading.Thread(target=do_sheet_sync, kwargs={"force_issues": True}, daemon=True).start()
 
 def background_periodic_sync():
+    """
+    Polls Google Sheet (MASTER + Progress) every 12 seconds so any edit made directly in Google Sheet
+    automatically updates the live web dashboard in real-time (even without Apps Script triggers).
+    """
     while True:
-        time.sleep(600)  # Sync every 10 minutes
+        time.sleep(12)  # Real-time sync every 12 seconds
         try:
-            do_sheet_sync()
+            do_sheet_sync(force_issues=False)
         except:
             pass
+
+def background_keep_alive_worker():
+    """
+    ยิงสัญญาณปลุกเซิร์ฟเวอร์ Render ผ่าน Public URL ทุกๆ 4 นาที (240 วินาที)
+    ป้องกันไม่ให้ Render Free Tier ตัดเข้าโหมด Sleep (15 นาที) โดยอัตโนมัติ
+    """
+    global KEEP_ALIVE_COUNT, LAST_KEEP_ALIVE_TIME
+    time.sleep(25)  # รอให้เซิร์ฟเวอร์เปิดพอร์ตพร้อมรับงานก่อน
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) KPGreenergy-KeepAlive/1.9",
+        "Accept": "application/json, text/plain, */*",
+        "Cache-Control": "no-cache"
+    }
+    while True:
+        try:
+            if RENDER_PUBLIC_URL and "onrender.com" in RENDER_PUBLIC_URL:
+                ping_url = f"{RENDER_PUBLIC_URL}/api/live-status?keepalive={int(time.time())}"
+                resp = requests.get(ping_url, headers=headers, timeout=15)
+                KEEP_ALIVE_COUNT += 1
+                LAST_KEEP_ALIVE_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[KeepAlive] #{KEEP_ALIVE_COUNT} Pinged {ping_url} -> HTTP {resp.status_code}")
+
+                # ทุกๆ 2 รอบ (8 นาที) ให้เรียก Google Apps Script เพื่อสะกิดกลับมาที่ Render อีกชั้น
+                if KEEP_ALIVE_COUNT % 2 == 0:
+                    gas_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
+                    if gas_url and "script.google.com" in gas_url:
+                        sep = "&" if "?" in gas_url else "?"
+                        requests.get(f"{gas_url}{sep}action=keep_alive", timeout=15, allow_redirects=True)
+        except Exception as e:
+            print(f"[KeepAlive Warning] Self-ping error: {e}")
+        time.sleep(240)  # ยิงซ้ำทุกๆ 4 นาที (240 วินาที)
 
 def background_retry_worker():
     while True:
@@ -291,11 +339,20 @@ async def on_startup():
     trigger_background_sheet_sync()
     threading.Thread(target=background_periodic_sync, daemon=True).start()
     threading.Thread(target=background_retry_worker, daemon=True).start()
+    threading.Thread(target=background_keep_alive_worker, daemon=True).start()
 
 @app.get("/api/live-status")
+@app.get("/api/keep-alive")
 async def get_live_status():
-    global DATA_VERSION, LAST_UPDATE_TIME
-    return {"version": DATA_VERSION, "last_update": LAST_UPDATE_TIME}
+    global DATA_VERSION, LAST_UPDATE_TIME, KEEP_ALIVE_COUNT, LAST_KEEP_ALIVE_TIME
+    return {
+        "version": DATA_VERSION,
+        "last_update": LAST_UPDATE_TIME,
+        "keep_alive_active": True,
+        "keep_alive_pings": KEEP_ALIVE_COUNT,
+        "last_keep_alive": LAST_KEEP_ALIVE_TIME,
+        "render_url": RENDER_PUBLIC_URL
+    }
 
 @app.get("/api/sync-latest")
 @app.post("/api/sync-latest")
@@ -1101,32 +1158,16 @@ async def handle_webhook(request: Request):
     if action in ["update_milestone", "save_progress"]:
         p_id = body.get("project_id")
         p_order = str(body.get("order_no") or "").strip()
-        p_name = str(body.get("project_name", "")).strip().lower()
+        p_name = str(body.get("project_name", "")).strip()
+        p_lot = str(body.get("lot", "")).strip()
         m_name = str(body.get("milestone_name", "")).strip()
         m_idx = body.get("milestone_index")
         
         if not p_id:
-            # 1. Exact order_no
-            if p_order:
-                for p in engine.all_projects:
-                    if str(p.get("order_no", "")).strip() == p_order:
-                        p_id = p["id"]
-                        break
-            # 2. Exact project name
-            if not p_id and p_name:
-                for p in engine.all_projects:
-                    if p["name"].strip().lower() == p_name:
-                        p_id = p["id"]
-                        break
-            # 3. Substring project name
-            if not p_id and p_name:
-                for p in engine.all_projects:
-                    pn = p["name"].strip().lower()
-                    if p_name in pn or pn in p_name:
-                        p_id = p["id"]
-                        break
+            found_p = engine._find_project_strict(p_name, p_order, p_lot, allow_order_fallback=True)
+            if found_p:
+                p_id = found_p["id"]
 
-        # Fallback to existing pct if parse fails (Bug #6)
         existing_val = 0.0
         if p_id and p_id in engine.projects_dict:
             for idx, m in enumerate(engine.projects_dict[p_id].get("milestones", [])):
@@ -1145,12 +1186,14 @@ async def handle_webhook(request: Request):
                 actual_pct=pct,
                 actual_start=body.get("actual_start"),
                 actual_finish=body.get("actual_finish"),
+                planned_start=body.get("planned_start"),
+                planned_finish=body.get("planned_finish"),
                 milestone_index=m_idx
             )
             if eng_res:
                 notify_data_updated()
                 
-                # BUG #1 FIX: If webhook source was NOT sheet, write back to Google Sheet!
+                # If webhook source was NOT sheet, write back to Google Sheet!
                 if source != "sheet":
                     target_write_url = getattr(engine, "google_sheet_webapp_url", "") or DEFAULT_WEBAPP_URL
                     if target_write_url and "script.google.com" in target_write_url:
@@ -1164,6 +1207,8 @@ async def handle_webhook(request: Request):
                             "actual_pct": pct,
                             "actual_start": body.get("actual_start") or "",
                             "actual_finish": body.get("actual_finish") or "",
+                            "planned_start": body.get("planned_start") or "",
+                            "planned_finish": body.get("planned_finish") or "",
                             "updated_by": body.get("updated_by") or "Webhook API",
                             "note": body.get("note") or "อัปเดตผ่าน Webhook",
                             "source": "webapp_webhook"
@@ -1186,71 +1231,102 @@ async def handle_webhook(request: Request):
                 "milestone": m_name,
                 "milestone_index": m_idx,
                 "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"] if p_id in engine.projects_dict else 0,
+                "planned_progress_pct": engine.projects_dict[p_id]["planned_progress_pct"] if p_id in engine.projects_dict else 0,
                 "version": DATA_VERSION
             }
 
-    if action in ["sheet_edited", "on_edit"]:
+    if action in ["sheet_edited", "on_edit", "master_edited"]:
+        sheet_name = str(body.get("sheet") or "").strip().lower()
         p_order = str(body.get("order_no") or "").strip()
-        p_name = str(body.get("project_name", "")).strip().lower()
+        p_name = str(body.get("project_name", "")).strip()
+        p_lot = str(body.get("lot", "")).strip()
         m_name = str(body.get("milestone_name", "")).strip()
         m_idx = body.get("milestone_index")
         
-        p_id = None
-        # 1. Exact order_no
-        if p_order:
-            for p in engine.all_projects:
-                if str(p.get("order_no", "")).strip() == p_order:
-                    p_id = p["id"]
-                    break
-        # 2. Exact project name
-        if not p_id and p_name:
-            for p in engine.all_projects:
-                if p["name"].strip().lower() == p_name:
-                    p_id = p["id"]
-                    break
-        # 3. Substring project name
-        if not p_id and p_name:
-            for p in engine.all_projects:
-                pn = p["name"].strip().lower()
-                if p_name in pn or pn in p_name:
-                    p_id = p["id"]
-                    break
+        found_p = engine._find_project_strict(p_name, p_order, p_lot, allow_order_fallback=True)
+        p_id = found_p["id"] if found_p else None
 
-        # Check existing milestone value and protect against overwrite loops
-        existing_val = 0.0
         if p_id and p_id in engine.projects_dict:
-            for idx, m in enumerate(engine.projects_dict[p_id].get("milestones", [])):
+            prj = engine.projects_dict[p_id]
+            for idx, m in enumerate(prj.get("milestones", [])):
                 if (m_name and m["name"].strip().lower() == m_name.lower()) or (m_idx is not None and idx == m_idx):
-                    existing_val = m.get("actual_pct", 0.0)
                     if not m_name:
                         m_name = m["name"]
                     break
-                    
-        # Protection check: if recently edited from Web App / webhook, avoid echoing back!
-        if p_id and m_name and sync_manager.is_milestone_protected(p_id, m_name):
-            return {
-                "status": "ignored",
-                "reason": "milestone_protected_by_webapp_edit",
-                "project_id": p_id,
-                "milestone": m_name
-            }
 
-        # Safe parse progress with comma and % support (Bug #6)
-        val_pct = safe_parse_progress_pct(body.get("new_value", body.get("actual_pct")), fallback=existing_val)
-        
-        if val_pct == 0.0:
-            if body.get("actual_finish"):
-                val_pct = 1.0
-            elif body.get("actual_start"):
-                val_pct = 0.5
-                
-        if p_id:
+            # Clear any web-edit protection because the user just edited directly in Google Sheet!
+            if m_name:
+                sync_manager.clear_milestone_protection(p_id, m_name)
+
+            # Case 1: Edit made in Tab MASTER (Planned Start, Planned Finish, Weight, or Project Metadata)
+            if action == "master_edited" or "master" in sheet_name:
+                if body.get("lot"):
+                    prj["lot"] = str(body.get("lot")).strip()
+                if body.get("business_unit"):
+                    prj["business_unit"] = str(body.get("business_unit")).strip()
+                if body.get("installation_type"):
+                    prj["installation_type"] = str(body.get("installation_type")).strip()
+                if body.get("capacity_kwp") is not None:
+                    try:
+                        prj["capacity_kwp"] = round(float(str(body.get("capacity_kwp")).replace(",", "")), 2)
+                    except:
+                        pass
+                if body.get("type_code") is not None:
+                    try:
+                        prj["type_code"] = int(float(body.get("type_code")))
+                    except:
+                        pass
+
+                w_val = None
+                if "weight" in body and body.get("weight") is not None:
+                    raw_w = str(body.get("weight")).strip()
+                    w_val = 0.0 if raw_w in ("", "-") else safe_parse_progress_pct(raw_w, fallback=0.0)
+
+                eng_res = engine.update_milestone(
+                    project_id=p_id,
+                    milestone_name=m_name,
+                    milestone_index=m_idx,
+                    planned_start=body.get("planned_start") if "planned_start" in body else None,
+                    planned_finish=body.get("planned_finish") if "planned_finish" in body else None,
+                    weight=w_val
+                )
+                if not eng_res:
+                    engine.recalculate_project_metrics(prj)
+                    engine.save_to_cache()
+                    eng_res = True
+                notify_data_updated()
+                return {
+                    "status": "ok",
+                    "updated": eng_res,
+                    "sheet": "MASTER",
+                    "project_id": p_id,
+                    "project_name": prj["name"],
+                    "milestone": m_name,
+                    "milestone_index": m_idx,
+                    "planned_progress_pct": prj["planned_progress_pct"],
+                    "actual_progress_pct": prj["actual_progress_pct"],
+                    "version": DATA_VERSION
+                }
+
+            # Case 2: Edit made in Tab Progress (Actual Start, Actual Finish, Actual %)
+            raw_pct_in = body.get("new_value", body.get("actual_pct"))
+            if raw_pct_in is None or str(raw_pct_in).strip() in ("", "-"):
+                val_pct = 0.0
+            else:
+                val_pct = safe_parse_progress_pct(raw_pct_in, fallback=0.0)
+            
+            if val_pct == 0.0:
+                if body.get("actual_finish") and str(body.get("actual_finish")).strip() not in ("", "-"):
+                    val_pct = 1.0
+                elif body.get("actual_start") and str(body.get("actual_start")).strip() not in ("", "-"):
+                    val_pct = 0.5
+                    
             eng_res = engine.update_milestone(
                 project_id=p_id,
                 milestone_name=m_name,
                 actual_pct=val_pct,
-                actual_start=body.get("actual_start"),
-                actual_finish=body.get("actual_finish"),
+                actual_start=body.get("actual_start") or "",
+                actual_finish=body.get("actual_finish") or "",
                 milestone_index=m_idx
             )
             if eng_res:
@@ -1258,12 +1334,14 @@ async def handle_webhook(request: Request):
             return {
                 "status": "ok",
                 "updated": eng_res,
+                "sheet": "Progress",
                 "project_id": p_id,
-                "project_name": engine.projects_dict[p_id]["name"],
+                "project_name": prj["name"],
                 "milestone": m_name,
                 "milestone_index": m_idx,
                 "new_pct": val_pct,
-                "actual_progress_pct": engine.projects_dict[p_id]["actual_progress_pct"],
+                "actual_progress_pct": prj["actual_progress_pct"],
+                "planned_progress_pct": prj["planned_progress_pct"],
                 "version": DATA_VERSION
             }
 

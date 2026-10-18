@@ -107,34 +107,34 @@
       </div>
 
       <!-- MAIN NAVIGATION TABS (DARK GREEN BAR) -->
-      <nav class="flex space-x-6 sm:space-x-8 -mb-px text-sm font-medium border-t border-[#064e3b] overflow-x-auto custom-scroll">
-        <button onclick="switchTab('overview')" id="tab-btn-overview" class="py-3 px-1 border-b-2 border-amber-400 text-amber-300 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="layout-grid" class="w-4 h-4"></i>
+      <nav class="flex space-x-2 sm:space-x-3 -mb-px text-xs font-medium border-t border-[#064e3b] overflow-x-auto custom-scroll">
+        <button onclick="switchTab('overview')" id="tab-btn-overview" class="py-3 px-1 border-b-2 border-amber-400 text-amber-300 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="layout-grid" class="w-3.5 h-3.5"></i>
           <span>ภาพรวมรายเฟส (Phase Overview)</span>
         </button>
-        <button onclick="switchTab('project')" id="tab-btn-project" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="trending-up" class="w-4 h-4"></i>
+        <button onclick="switchTab('project')" id="tab-btn-project" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="trending-up" class="w-3.5 h-3.5"></i>
           <span>เจาะลึกรายโครงการ & S-Curve</span>
         </button>
-        <button onclick="switchTab('comparison')" id="tab-btn-comparison" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
+        <button onclick="switchTab('comparison')" id="tab-btn-comparison" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="bar-chart-3" class="w-3.5 h-3.5"></i>
           <span>กราฟเปรียบเทียบ & การวิเคราะห์</span>
         </button>
-        <button onclick="switchTab('issues')" id="tab-btn-issues" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-300"></i>
+        <button onclick="switchTab('issues')" id="tab-btn-issues" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-amber-300"></i>
           <span>รายงานปัญหาประจำสัปดาห์ (Weekly Issues)</span>
           <span id="nav-issue-badge" class="hidden text-[10px] bg-rose-500 text-white font-bold px-1.5 py-0.5 rounded-full ml-1">0</span>
         </button>
-        <button onclick="switchTab('cctv')" id="tab-btn-cctv" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="video" class="w-4 h-4 text-rose-300"></i>
+        <button onclick="switchTab('cctv')" id="tab-btn-cctv" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="video" class="w-3.5 h-3.5 text-rose-300"></i>
           <span>CCTV Real time</span>
         </button>
-        <button onclick="switchTab('photos')" id="tab-btn-photos" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="file-text" class="w-4 h-4 text-amber-300"></i>
+        <button onclick="switchTab('photos')" id="tab-btn-photos" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="file-text" class="w-3.5 h-3.5 text-amber-300"></i>
           <span>รายงานโครงการ</span>
         </button>
-        <button onclick="switchTab('integration')" id="tab-btn-integration" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-2 whitespace-nowrap">
-          <i data-lucide="settings" class="w-4 h-4"></i>
+        <button onclick="switchTab('integration')" id="tab-btn-integration" class="py-3 px-1 border-b-2 border-transparent text-emerald-200/80 hover:text-white hover:border-emerald-400 flex items-center space-x-1.5 whitespace-nowrap">
+          <i data-lucide="settings" class="w-3.5 h-3.5"></i>
           <span>เชื่อมต่อ LINE & Google Sheets</span>
         </button>
       </nav>
@@ -857,15 +857,15 @@
           <table class="w-full text-left border-collapse text-xs">
             <thead>
               <tr class="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
-                <th class="p-3.5 whitespace-nowrap">รหัส / โครงการ</th>
-                <th class="p-3.5 whitespace-nowrap">สัปดาห์ / หมวดหมู่</th>
-                <th class="p-3.5 whitespace-nowrap">วันเริ่มปัญหา</th>
-                <th class="p-3.5 whitespace-nowrap">วันจบปัญหา</th>
-                <th class="p-3.5 min-w-[220px]">คำอธิบายปัญหา & สาเหตุ</th>
-                <th class="p-3.5 min-w-[220px]">การแก้ไขประจำสัปดาห์</th>
-                <th class="p-3.5 text-center whitespace-nowrap">สถานะ</th>
-                <th class="p-3.5 text-center whitespace-nowrap">ผลกระทบ</th>
-                <th class="p-3.5 text-center whitespace-nowrap">จัดการ</th>
+                <th class="p-3 whitespace-nowrap">รหัส / โครงการ</th>
+                <th class="p-3 whitespace-nowrap">สัปดาห์ / หมวดหมู่</th>
+                <th class="p-3 whitespace-nowrap">วันเริ่มปัญหา</th>
+                <th class="p-3 whitespace-nowrap">วันจบปัญหา</th>
+                <th class="p-3 min-w-[180px]">คำอธิบายปัญหา & สาเหตุ</th>
+                <th class="p-3 min-w-[180px]">การแก้ไขประจำสัปดาห์</th>
+                <th class="p-3 text-center whitespace-nowrap">สถานะ</th>
+                <th class="p-3 text-center whitespace-nowrap">ผลกระทบ</th>
+                <th class="p-3 text-center whitespace-nowrap">จัดการ</th>
               </tr>
             </thead>
             <tbody id="issues-table-body" class="divide-y divide-slate-100 text-slate-700">
@@ -1090,7 +1090,6 @@
                 💡 <strong>วิธีเอาลิงก์เขียน:</strong> ใน Google Sheet ไปที่ <strong>ส่วนขยาย > Apps Script > Deploy > Manage deployments</strong> > คัดลอก <strong>Web app URL</strong> มาวางที่ช่องนี้ เมื่อกดแก้ไขบนหน้าเว็บ ข้อมูลจะวิ่งไปเขียนลงเซลล์ใน Google Sheet ทันทีครับ!
               </p>
             </div>
-          </div>
             <div class="pt-2 border-t border-slate-200 text-[11px] text-slate-500">
               <span class="font-medium text-slate-700">ขั้นตอนการ Deploy ใน Google Sheet:</span> ไปที่ ส่วนขยาย > Apps Script > กด Deploy > New deployment > เลือกประเภท Web App (Execute as Me, Access Anyone) > คัดลอก URL มาวางในช่องด้านบน
             </div>

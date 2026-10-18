@@ -2829,8 +2829,8 @@ async function refreshDataSilently() {
   }
 }
 
-// Start auto polling: every 7 seconds for fast real-time collaborative updates + instant on window focus
-setInterval(checkLiveStatus, 7000);
+// Start auto polling: every 4 seconds for fast real-time collaborative updates + instant on window focus
+setInterval(checkLiveStatus, 4000);
 window.addEventListener('focus', checkLiveStatus);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
